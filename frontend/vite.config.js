@@ -19,6 +19,14 @@ export default defineConfig(() => {
                     changeOrigin: true
                 }
             }
+        },
+        css: {
+            preprocessorOptions: {
+                scss: {
+                    quietDeps: true,
+                    silenceDeprecations: ['legacy-js-api', 'import', 'if-function', 'global-builtin', 'color-functions', 'mixed-decls']
+                }
+            }
         }
     };
 });

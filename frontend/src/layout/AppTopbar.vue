@@ -10,6 +10,10 @@ const { layoutConfig, onMenuToggle } = useLayout();
 
 const outsideClickListener = ref(null);
 const topbarMenuActive = ref(false);
+const isMobile = ref(window.innerWidth < 991);
+const onResize = () => {
+    isMobile.value = window.innerWidth < 991;
+};
 const router = useRouter();
 const confirm = useConfirm();
 const { user, fullname, clearUser } = useAuth();
@@ -40,10 +44,12 @@ const fmtDate = (iso) => {
 
 onMounted(() => {
     bindOutsideClickListener();
+    window.addEventListener('resize', onResize);
 });
 
 onBeforeUnmount(() => {
     unbindOutsideClickListener();
+    window.removeEventListener('resize', onResize);
 });
 
 const logoUrl = computed(() => {
@@ -111,7 +117,7 @@ const isOutsideClicked = (event) => {
     <div class="layout-topbar">
        
 
-        <button class="p-link layout-menu-button layout-topbar-button" v-tooltip.bottom="'Thu gọn / mở menu'" @click="onMenuToggle()">
+        <button class="p-link layout-menu-button layout-topbar-button" v-tooltip.bottom="!isMobile ? 'Thu gọn / mở menu' : undefined" @click="onMenuToggle()">
             <i class="pi pi-bars"></i>
         </button>
 
@@ -129,15 +135,15 @@ const isOutsideClicked = (event) => {
         </button>
 
         <div class="layout-topbar-menu" :class="topbarMenuClasses">
-            <router-link to="/projects" class="p-link layout-topbar-button" v-tooltip.bottom="'Đổi dự án'">
+            <router-link to="/projects" class="p-link layout-topbar-button" v-tooltip.bottom="!isMobile ? 'Đổi dự án' : undefined">
                 <i class="pi pi-th-large"></i>
                 <span>Đổi dự án</span>
             </router-link>
-            <button @click="userDialog = true" class="p-link layout-topbar-button" v-tooltip.bottom="fullname || user">
+            <button @click="userDialog = true" class="p-link layout-topbar-button" v-tooltip.bottom="!isMobile ? (fullname || user) : undefined">
                 <i class="pi pi-user"></i>
                 <span>{{ fullname || user }}</span>
             </button>
-            <button @click="onLogoutClick()" class="p-link layout-topbar-button" v-tooltip.bottom="'Đăng xuất'">
+            <button @click="onLogoutClick()" class="p-link layout-topbar-button" v-tooltip.bottom="!isMobile ? 'Đăng xuất' : undefined">
                 <i class="pi pi-sign-out text-red-500"></i>
                 <span>Đăng xuất</span>
             </button>
