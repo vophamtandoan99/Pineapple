@@ -15,6 +15,9 @@ import sys
 import urllib.parse
 import uuid
 
+import json
+from http.server import BaseHTTPRequestHandler
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 API = "7.1"
@@ -417,6 +420,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send({"error": "not found"}, 404)
 
 
+if __name__ == "__main__":
+    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
+    url = f"http://127.0.0.1:{port}"
+    print(f"Web UI: {url}   (Ctrl+C để dừng)")
+    http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
+
+
+# Adapter để Vercel Serverless Function gọi đến Handler của bạn
+class handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        # Tái sử dụng lại logic của Handler cũ
+        h = Handler(self.request, self.client_address, self.server)
+        
+    def do_POST(self):
+        h = Handler(self.request, self.client_address, self.server)
+
+# Nếu chạy local bằng lệnh python3 backend/server.py thì vẫn giữ nguyên tính năng dev local
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
     url = f"http://127.0.0.1:{port}"
