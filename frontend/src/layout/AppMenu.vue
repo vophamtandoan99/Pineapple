@@ -180,9 +180,6 @@ const model = ref([
             <app-menu-item v-if="!item.separator" :item="item" :index="i"></app-menu-item>
             <li v-if="item.separator" class="menu-separator"></li>
         </template>
-        <li>
-            <img src="/layout/images/pinia-course.png" alt="Prime Blocks" class="w-full opacity-50" />
-        </li>
     </ul>
 </template>
 

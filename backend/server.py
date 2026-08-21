@@ -180,7 +180,7 @@ def render_lark(items, report_date, collection, project):
     for it in items:
         f = it["fields"]
         lines.append(
-            f"| {cell(f.get('System.State'))} | {date_str} | <none> | <none> "
+            f"| {cell(f.get('System.State'))} | {date_str} |  |  "
             f"| {cell(f.get('System.WorkItemType'))} | {it['id']} "
             f"| {cell(f.get('System.Title'))} | {base}{it['id']} |"
         )
