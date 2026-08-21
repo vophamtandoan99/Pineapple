@@ -22,7 +22,7 @@ const picked = reactive({ today: new Set(), next: new Set() });
 const reportDate = ref(new Date());
 const previewTab = ref(0);
 const resultDialog = ref(false);
-const resultTab = ref(2);
+const resultTab = ref(0);
 const taskBase = ref("");
 
 // ---------- style giống dashboard ----------
@@ -79,7 +79,7 @@ const visibleItems = computed(() => {
       (!q || String(it.id) === q || it.title.toLowerCase().includes(q)),
   );
 });
-// sort theo iteration để row group hoạt động
+// sort theo iteration để item cùng sprint đứng cạnh nhau
 const groupedItems = computed(() =>
   [...visibleItems.value].sort((a, b) =>
     (b.iteration || "").localeCompare(a.iteration || ""),
@@ -87,6 +87,8 @@ const groupedItems = computed(() =>
 );
 const sprintLabel = (it) =>
   (it || "").split("\\").pop() || "Không thuộc sprint";
+// option filter có khi là string (state/type), có khi object {label, value}
+const optionLabelOf = (o) => (typeof o === "string" ? o : o.label);
 
 // ---------- load ----------
 onMounted(async () => {
@@ -203,9 +205,9 @@ const larkMd = computed(() => {
   for (const it of merged) {
     const link = taskBase.value ? `${taskBase.value}${it.id}` : `${it.id}`;
     lines.push(
-      `| ${escapeMd(it.state)} | ${dateStr} |  |  | ${escapeMd(
-        it.type,
-      )} | ${it.id} | ${escapeMd(it.title)} | ${link} |`,
+      `| ${escapeMd(it.state)} | ${dateStr} |  |  | ${escapeMd(it.type)} | ${
+        it.id
+      } | ${escapeMd(it.title)} | ${link} |`,
     );
   }
   return lines.join("\n");
@@ -242,8 +244,11 @@ watch([todayItems, nextItems, reportDate, fullname], () =>
 );
 // reset tab hiện tại về nội dung sinh tự động
 const resetTab = () => (dirty[previewTab.value] = false);
-// reset cả 3 tab
-const resetAll = () => [0, 1, 2].forEach((t) => (dirty[t] = false));
+// reset cả 3 tab + clear chọn item bên table
+const resetAll = () => {
+  [0, 1, 2].forEach((t) => (dirty[t] = false));
+  clearPick();
+};
 
 // ---------- report ----------
 // nội dung report theo tab, giữ edit tay của người dùng nếu có
@@ -259,11 +264,32 @@ function makeReport() {
     });
     return;
   }
-  resultTab.value = 2;
+  resultTab.value = 0;
   resultDialog.value = true;
 }
 
-const resultText = computed(() => reportOf(resultTab.value));
+// ink-bar của TabView đo offset qua getBoundingClientRect lúc mount,
+// đang giữa lúc dialog animate (scale 150ms) nên đo lệch. Dialog emit
+// 'show' ở onEnter (đầu animation) — phải đợi animation xong mới đo lại.
+const resultTabView = ref(null);
+const reflowInkBar = () =>
+  setTimeout(() => resultTabView.value?.updateInkBar?.(), 200);
+
+// dialog cho sửa tay: dùng chung edited/dirty với preview ngoài —
+// sửa ở đâu thì copy/tải file ở cả hai chỗ đều thấy.
+// Tab dialog xếp Full, Chat, Lark — map về index nội dung 0=chat,1=lark,2=full
+const dialogTabIndexMap = [2, 0, 1];
+const resultText = computed({
+  get: () => reportOf(dialogTabIndexMap[resultTab.value]),
+  set: (v) => {
+    const t = dialogTabIndexMap[resultTab.value];
+    edited[t] = v;
+    dirty[t] = true;
+  },
+});
+// dialog đổi tab thì preview ngoài nhảy về tab nội dung tương ứng —
+// sửa trong dialog xong đóng lại, card ngoài đang đúng tab, thấy ngay thay đổi
+watch(resultTab, (i) => (previewTab.value = dialogTabIndexMap[i]));
 
 const reportFileName = () =>
   `bao-cao-${ddMMyyyy(reportDate.value).replaceAll("/", "-")}.md`;
@@ -311,8 +337,9 @@ async function copyText(text) {
     <div class="col-12 xl:col-7">
       <div class="card">
         <div class="flex justify-content-between align-items-center mb-4">
-          <h5 class="m-0">
-            Chọn công việc <Tag v-if="currentProject" :value="currentProject" />
+          <h5 class="m-0 flex align-items-center">
+            Chọn công việc
+            <Tag v-if="currentProject" :value="currentProject" class="ml-2" />
           </h5>
         </div>
         <div class="mb-3">
@@ -332,7 +359,16 @@ async function copyText(text) {
             placeholder="Mọi State"
             :filter="true"
             class="flex-1 min-w-0"
-          />
+            panelClass="report-filter-panel"
+          >
+            <template #option="s">
+              <span
+                class="filter-option"
+                v-tooltip.bottom="optionLabelOf(s.option)"
+                >{{ optionLabelOf(s.option) }}</span
+              >
+            </template>
+          </MultiSelect>
           <MultiSelect
             v-model="filterIteration"
             :options="iterationOptions"
@@ -341,14 +377,32 @@ async function copyText(text) {
             placeholder="Mọi sprint"
             :filter="true"
             class="flex-1 min-w-0"
-          />
+            panelClass="report-filter-panel"
+          >
+            <template #option="s">
+              <span
+                class="filter-option"
+                v-tooltip.bottom="optionLabelOf(s.option)"
+                >{{ optionLabelOf(s.option) }}</span
+              >
+            </template>
+          </MultiSelect>
           <MultiSelect
             v-model="filterType"
             :options="typeOptions"
             placeholder="Mọi loại"
             :filter="true"
             class="flex-1 min-w-0"
-          />
+            panelClass="report-filter-panel"
+          >
+            <template #option="s">
+              <span
+                class="filter-option"
+                v-tooltip.bottom="optionLabelOf(s.option)"
+                >{{ optionLabelOf(s.option) }}</span
+              >
+            </template>
+          </MultiSelect>
           <MultiSelect
             v-model="filterParent"
             :options="parentOptions"
@@ -357,7 +411,16 @@ async function copyText(text) {
             placeholder="Mọi parent"
             :filter="true"
             class="flex-1 min-w-0"
-          />
+            panelClass="report-filter-panel"
+          >
+            <template #option="s">
+              <span
+                class="filter-option"
+                v-tooltip.bottom="optionLabelOf(s.option)"
+                >{{ optionLabelOf(s.option) }}</span
+              >
+            </template>
+          </MultiSelect>
         </div>
         <div
           class="flex flex-wrap gap-2 mb-4 align-items-center justify-content-end"
@@ -381,12 +444,11 @@ async function copyText(text) {
         </div>
         <DataTable
           :value="groupedItems"
-          rowGroupMode="subheader"
-          groupRowsBy="iteration"
-          :pt="{ rowGroupHeaderCell: { colspan: 5 } }"
           :loading="loadingItems"
           :rows="rows"
-          :rowsPerPageOptions="[10, 20, 50, 100]"
+          scrollable
+          scrollHeight="51vh"
+          :rowsPerPageOptions="[5, 10, 20, 50, 100]"
           @page="onPage"
           :paginator="true"
           dataKey="id"
@@ -403,20 +465,13 @@ async function copyText(text) {
               <span>Không có dữ liệu</span>
             </div>
           </template>
-          <template #groupheader="slotProps">
-            <span class="font-bold text-primary">{{
-              sprintLabel(slotProps.data.iteration)
-            }}</span>
-            <span class="text-500 font-normal ml-2"
-              >({{
-                groupedItems.filter(
-                  (i) => i.iteration === slotProps.data.iteration,
-                ).length
-              }}
-              items)</span
-            >
-          </template>
-          <Column field="id" header="ID" :sortable="true" style="width: 10%">
+          <Column
+            field="id"
+            header="ID"
+            :sortable="true"
+            style="width: 5rem"
+            frozen
+          >
             <template #body="slotProps">
               <a
                 :href="taskBase + slotProps.data.id"
@@ -432,29 +487,33 @@ async function copyText(text) {
             field="title"
             header="Tiêu đề"
             :sortable="true"
-            style="width: 44%"
+            style="width: 40%"
           >
             <template #body="slotProps">
-              <span class="one-line" v-tooltip.bottom="slotProps.data.title">{{
-                slotProps.data.title
-              }}</span>
-              <div
-                class="flex align-items-center flex-wrap mt-1"
-                style="column-gap: 0.5rem"
-              >
+              <div class="flex align-items-center" style="column-gap: 0.5rem">
                 <span
-                  class="text-sm font-medium"
+                  class="text-sm font-medium flex-shrink-0"
                   :style="{
                     color: typeColors[slotProps.data.type] || '#6b7280',
                   }"
                   >{{ slotProps.data.type }}</span
                 >
+                <span
+                  class="one-line flex-1 min-w-0"
+                  v-tooltip.bottom="slotProps.data.title"
+                  >{{ slotProps.data.title }}</span
+                >
+              </div>
+              <div
+                class="flex align-items-center flex-wrap mt-1"
+                style="column-gap: 0.5rem"
+              >
                 <ProgressBar
                   :value="progressOf(slotProps.data)"
                   :showValue="false"
-                  style="height: 8px; width: 4rem"
+                  style="height: 4px; width: 8rem"
                 />
-                <span class="font-medium text-sm w-2rem"
+                <span class="italic text-500 text-sm w-2rem"
                   >{{ progressOf(slotProps.data) }}%</span
                 >
               </div>
@@ -464,7 +523,7 @@ async function copyText(text) {
             field="state"
             header="Trạng thái"
             :sortable="true"
-            style="width: 18%"
+            style="min-width: 15rem"
           >
             <template #body="slotProps">
               <Tag
@@ -479,42 +538,42 @@ async function copyText(text) {
               />
             </template>
           </Column>
-          <Column style="width: 14%">
+          <Column style="min-width: 5rem" frozen alignFrozen="right">
             <template #header>
-              <div class="flex align-items-center gap-2">
-                <Checkbox
-                  :modelValue="allPicked('next')"
-                  binary
-                  @update:modelValue="toggleAll('next')"
-                />
-                <span>Mới</span>
-              </div>
+              <Checkbox
+                :modelValue="allPicked('next')"
+                binary
+                @update:modelValue="toggleAll('next')"
+              />
+              <span class="ml-2">Mới</span>
             </template>
             <template #body="slotProps">
-              <Checkbox
-                :modelValue="picked.next.has(slotProps.data.id)"
-                binary
-                @update:modelValue="toggle(slotProps.data.id, 'next')"
-              />
+              <div class="flex align-items-center items-center justify-center">
+                <Checkbox
+                  :modelValue="picked.next.has(slotProps.data.id)"
+                  binary
+                  @update:modelValue="toggle(slotProps.data.id, 'next')"
+                />
+              </div>
             </template>
           </Column>
-          <Column style="width: 14%">
+          <Column style="min-width: 5rem" frozen alignFrozen="right">
             <template #header>
-              <div class="flex align-items-center gap-2">
-                <Checkbox
-                  :modelValue="allPicked('today')"
-                  binary
-                  @update:modelValue="toggleAll('today')"
-                />
-                <span>Cũ</span>
-              </div>
+              <Checkbox
+                :modelValue="allPicked('today')"
+                binary
+                @update:modelValue="toggleAll('today')"
+              />
+              <span class="ml-2">Cũ</span>
             </template>
             <template #body="slotProps">
-              <Checkbox
-                :modelValue="picked.today.has(slotProps.data.id)"
-                binary
-                @update:modelValue="toggle(slotProps.data.id, 'today')"
-              />
+              <div class="flex align-items-center items-center justify-center">
+                <Checkbox
+                  :modelValue="picked.today.has(slotProps.data.id)"
+                  binary
+                  @update:modelValue="toggle(slotProps.data.id, 'today')"
+                />
+              </div>
             </template>
           </Column>
         </DataTable>
@@ -530,81 +589,89 @@ async function copyText(text) {
             v-model="reportDate"
             dateFormat="dd/mm/yy"
             :showIcon="true"
+            class="flex-1"
           />
           <Button
             label="Tạo report"
             icon="pi pi-file"
             @click="makeReport"
+            class="flex-1"
           />
         </div>
 
         <div class="relative">
           <TabView v-model:activeIndex="previewTab">
             <TabPanel header="Chat">
-              <div class="flex justify-content-end gap-1 mb-2">
-                <Button
-                  icon="pi pi-refresh"
-                  class="p-button-text p-button-sm"
-                  aria-label="Reset về nội dung tự động"
-                  @click="resetTab"
-                />
-                <Button
-                  icon="pi pi-copy"
-                  class="p-button-text p-button-sm"
-                  aria-label="Copy"
-                  @click="copyText(tabText)"
-                />
+              <div class="pre-wrap">
+                <div class="pre-actions">
+                  <Button
+                    icon="pi pi-refresh"
+                    class="p-button-text p-button-sm"
+                    aria-label="Reset về nội dung tự động"
+                    @click="resetTab"
+                  />
+                  <Button
+                    icon="pi pi-copy"
+                    class="p-button-text p-button-sm"
+                    aria-label="Copy"
+                    @click="copyText(tabText)"
+                  />
+                </div>
+                <textarea
+                  v-model="tabText"
+                  class="preview-input"
+                  wrap="off"
+                  spellcheck="false"
+                ></textarea>
               </div>
-              <textarea
-                v-model="tabText"
-                class="preview-input"
-                wrap="off"
-                spellcheck="false"
-              ></textarea>
             </TabPanel>
             <TabPanel header="Lark">
-              <div class="flex justify-content-end gap-1 mb-2">
-                <Button
-                  icon="pi pi-refresh"
-                  class="p-button-text p-button-sm"
-                  aria-label="Reset về nội dung tự động"
-                  @click="resetTab"
-                />
-                <Button
-                  icon="pi pi-copy"
-                  class="p-button-text p-button-sm"
-                  aria-label="Copy"
-                  @click="copyText(tabText)"
-                />
+              <div class="pre-wrap">
+                <div class="pre-actions">
+                  <Button
+                    icon="pi pi-refresh"
+                    class="p-button-text p-button-sm"
+                    aria-label="Reset về nội dung tự động"
+                    @click="resetTab"
+                  />
+                  <Button
+                    icon="pi pi-copy"
+                    class="p-button-text p-button-sm"
+                    aria-label="Copy"
+                    @click="copyText(tabText)"
+                  />
+                </div>
+                <textarea
+                  v-model="tabText"
+                  class="preview-input"
+                  wrap="off"
+                  spellcheck="false"
+                ></textarea>
               </div>
-              <textarea
-                v-model="tabText"
-                class="preview-input"
-                wrap="off"
-                spellcheck="false"
-              ></textarea>
             </TabPanel>
             <TabPanel header="Full">
-              <div class="flex justify-content-end gap-1 mb-2">
-                <Button
-                  icon="pi pi-refresh"
-                  class="p-button-text p-button-sm"
-                  aria-label="Reset về nội dung tự động"
-                  @click="resetTab"
-                />
-                <Button
-                  icon="pi pi-copy"
-                  class="p-button-text p-button-sm"
-                  aria-label="Copy"
-                  @click="copyText(tabText)"
-                />
+              <div class="pre-wrap">
+                <div class="pre-actions">
+                  <Button
+                    icon="pi pi-refresh"
+                    class="p-button-text p-button-sm"
+                    aria-label="Reset về nội dung tự động"
+                    @click="resetTab"
+                  />
+                  <Button
+                    icon="pi pi-copy"
+                    class="p-button-text p-button-sm"
+                    aria-label="Copy"
+                    @click="copyText(tabText)"
+                  />
+                </div>
+                <textarea
+                  v-model="tabText"
+                  class="preview-input"
+                  wrap="off"
+                  spellcheck="false"
+                ></textarea>
               </div>
-              <textarea
-                v-model="tabText"
-                class="preview-input"
-                wrap="off"
-                spellcheck="false"
-              ></textarea>
             </TabPanel>
           </TabView>
           <Button
@@ -617,44 +684,67 @@ async function copyText(text) {
       </div>
     </div>
 
-    <!-- result dialog: full screen, xem trước + tải file -->
+    <!-- result dialog: xem trước + tải file -->
     <Dialog
       v-model:visible="resultDialog"
       modal
       header="Xem trước report"
-      class="report-fullscreen"
-      :style="{ width: '100vw', height: '100vh' }"
-      :contentStyle="{ height: 'calc(100vh - 8rem)', overflow: 'auto' }"
+      class="report-dialog"
+      :style="{ width: '70vw', height: '85vh' }"
+      :contentStyle="{
+        flex: '1',
+        minHeight: '0',
+        display: 'flex',
+        overflow: 'hidden',
+      }"
+      @show="reflowInkBar"
     >
-      <TabView v-model:activeIndex="resultTab">
-        <TabPanel header="Chat">
-          <pre class="report-pre m-0">{{ reportOf(0) }}</pre>
-        </TabPanel>
-        <TabPanel header="Lark">
-          <pre class="report-pre m-0">{{ reportOf(1) }}</pre>
-        </TabPanel>
-        <TabPanel header="Full">
-          <pre class="report-pre m-0">{{ reportOf(2) }}</pre>
-        </TabPanel>
-      </TabView>
-      <template #footer>
-        <Button
-          label="Copy"
-          icon="pi pi-copy"
-          class="p-button-outlined"
-          @click="copyText(resultText)"
-        />
-        <Button
-          :label="`Tải file (${reportFileName()})`"
-          icon="pi pi-download"
-          @click="downloadReport"
-        />
-        <Button
-          label="Đóng"
-          class="p-button-text"
-          @click="resultDialog = false"
-        />
-      </template>
+      <div class="relative">
+        <TabView ref="resultTabView" v-model:activeIndex="resultTab">
+          <TabPanel header="Full">
+            <div class="report-pre-wrap">
+              <textarea
+                v-model="resultText"
+                class="report-pre"
+                spellcheck="false"
+              ></textarea>
+            </div>
+          </TabPanel>
+          <TabPanel header="Chat">
+            <div class="report-pre-wrap">
+              <textarea
+                v-model="resultText"
+                class="report-pre"
+                spellcheck="false"
+              ></textarea>
+            </div>
+          </TabPanel>
+          <TabPanel header="Lark">
+            <div class="report-pre-wrap">
+              <textarea
+                v-model="resultText"
+                class="report-pre"
+                spellcheck="false"
+              ></textarea>
+            </div>
+          </TabPanel>
+        </TabView>
+        <!-- nút nằm cùng hàng tab, dạt phải — giống reset-all ở preview ngoài -->
+        <div class="dialog-tab-actions">
+          <Button
+            label="Copy"
+            icon="pi pi-copy"
+            class="p-button-outlined p-button-sm"
+            @click="copyText(resultText)"
+          />
+          <Button
+            :label="`Tải file (${reportFileName()})`"
+            icon="pi pi-download"
+            class="p-button-sm"
+            @click="downloadReport"
+          />
+        </div>
+      </div>
     </Dialog>
   </div>
 </template>
@@ -669,47 +759,111 @@ async function copyText(text) {
   text-overflow: ellipsis;
 }
 
-/* table-layout fixed để width % của cột được giữ, ellipsis mới hoạt động */
+/* table-layout fixed: giữ width cột, td không giãn theo nội dung —
+   ellipsis của .one-line mới hoạt động */
 :deep(.p-datatable-table) {
   table-layout: fixed;
 }
 
-/* row group header: band full-width cho rõ nhóm sprint
-   PrimeVue render td colspan = số cột - 1, nên style trên tr để phủ hết hàng */
-:deep(.p-rowgroup-header) {
-  background: var(--surface-ground);
-  box-shadow: inset 0 -1px 0 var(--surface-border);
-}
-:deep(.p-rowgroup-header td) {
-  background: transparent;
+/* thead sticky: PrimeVue v3 không sticky sẵn thead cho table scrollable.
+   ProgressBar trong cell là position:relative (theme) nên vẽ đè lên thead
+   thường khi cuộn — ghim thead, z-index cao hơn cả Progressbar lẫn
+   cột frozen (z-index 1 của theme). */
+:deep(
+    .p-datatable-scrollable
+      > .p-datatable-wrapper
+      > .p-datatable-table
+      > .p-datatable-thead
+  ) {
+  position: sticky;
+  top: 0;
+  z-index: 2;
 }
 
-/* vùng sửa preview: giống pre cũ, cao theo viewport */
+/* td cột frozen: theme chỉ sticky chứ không set z-index (th mới có z-1),
+   cùng z-auto với ProgressBar nhưng đứng trước trong DOM nên bị đè khi
+   cuộn ngang. Nâng lên 1 để nằm trên mọi content z-auto trong tbody. */
+:deep(.p-datatable .p-datatable-tbody > tr > td.p-frozen-column) {
+  z-index: 1;
+}
+
+/* vùng sửa preview: nền tối chung cho strip nút + textarea, cao theo viewport */
+.pre-wrap {
+  position: relative;
+  height: calc(100vh - 28rem);
+  margin-top: 0.75rem; /* thay padding panels đã bỏ */
+  display: flex;
+  flex-direction: column;
+  background: #111827;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+/* bỏ padding mặc định của panels (tạo khoảng trắng thừa dưới pre) */
+:deep(.p-tabview-panels) {
+  padding: 0;
+}
+
 .preview-input {
   display: block;
+  flex: 1;
+  min-height: 0; /* cho phép co lại, scroll nằm trong textarea */
   width: 100%;
-  height: calc(100vh - 28rem);
   margin: 0;
   padding: 0.75rem;
   border: none;
   outline: none;
-  border-radius: 6px;
   resize: none;
-  overflow: auto;
-  white-space: pre; /* không rớt dòng, cuộn ngang */
-  background: #111827;
+  overflow-y: auto;
+  overflow-x: hidden;
+  white-space: pre-wrap; /* rớt dòng, không cuộn ngang */
+  overflow-wrap: anywhere;
+  background: transparent;
   color: #f3f4f6;
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
     monospace;
   font-size: 0.875rem;
   line-height: 1.5;
+  /* scrollbar đồng nhất với nền tối */
+  scrollbar-width: thin;
+  scrollbar-color: #374151 #111827;
 }
 
-/* tab cách đường border-bottom của nav */
-:deep(.p-tabview .p-tabview-nav li a),
-:deep(.p-tabview .p-tabview-nav li) {
-  padding-bottom: 1.25rem !important;
+.preview-input::-webkit-scrollbar {
+  width: 8px;
+  background: #111827;
 }
+
+.preview-input::-webkit-scrollbar-thumb {
+  background: #374151;
+  border-radius: 4px;
+}
+
+.preview-input::-webkit-scrollbar-thumb:hover {
+  background: #4b5563;
+}
+
+/* strip nút reset + copy riêng trên cùng, không nằm trong vùng scroll */
+.pre-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.25rem;
+  padding: 0.25rem 0.25rem 0;
+}
+
+.pre-actions :deep(.p-button) {
+  color: #9ca3af;
+}
+
+.pre-actions :deep(.p-button:hover) {
+  background: rgba(255, 255, 255, 0.1);
+  color: #f9fafb;
+}
+
+/* tab dùng layout mặc định PrimeVue: label căn giữa nav,
+   active indicator (box-shadow inset đáy link) nằm trên border nav.
+   Không tự thêm padding-bottom cho li/a — đẩy indicator ra khỏi
+   đường kẻ thành cục đen lệch dưới. */
 
 /* nút reset-all nằm trong hàng tab, dạt phải */
 .reset-all-btn {
@@ -718,11 +872,26 @@ async function copyText(text) {
   right: 0;
 }
 
-/* chừa chỗ bên phải nav để nút reset-all không đè lên tab cuối */
+/* chừa chỗ bên phải nav để nút reset-all không đè lên tab cuối;
+   border-bottom khai báo lại tường minh — nav thành scroll container
+   (mobile) làm border của theme không vẽ hết chiều rộng */
 :deep(.p-tabview-nav) {
   padding-right: 3rem;
-  border-top-right-radius: 6px;
-  border-bottom-right-radius: 6px;
+  border-bottom: 1px solid var(--surface-border);
+}
+
+/* mobile: tab không xuống dòng (wrap làm đứt border-bottom nav),
+   nav cuộn ngang thay vì rớt hàng */
+@media (max-width: 767px) {
+  :deep(.p-tabview-nav) {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none; /* Firefox: ẩn scrollbar */
+  }
+
+  :deep(.p-tabview-nav::-webkit-scrollbar) {
+    display: none; /* Chrome: ẩn scrollbar */
+  }
 }
 
 /* header không rớt dòng */
@@ -734,30 +903,174 @@ async function copyText(text) {
 :deep(.p-tag) {
   white-space: nowrap;
 }
+</style>
 
-/* dialog report full màn hình: tắt căn giữa mặc định của p-dialog */
-:deep(.report-fullscreen.p-dialog) {
-  position: fixed;
-  inset: 0;
-  width: 100vw;
-  height: 100vh;
-  max-width: none;
-  max-height: none;
-  margin: 0;
-  transform: none !important;
+<style>
+/*
+ * CSS dialog report — KHÔNG scoped: PrimeVue Dialog mặc định appendTo="body",
+ * teleport ra ngoài #app, selector :deep() scoped không có ancestor data-v
+ * nên không match. Tiền tố .report-dialog để không leak ra ngoài dialog này.
+ */
+.report-dialog.p-dialog {
+  width: 70vw;
+  height: 85vh;
+  display: flex;
+  flex-direction: column; /* content flex:1 fill hết chỗ còn lại sau header */
 }
 
-/* nội dung report trong dialog */
-.report-pre {
-  padding: 0.75rem;
+/* content không cuộn: chuỗi flex min-height 0 đẩy scroll xuống pre.
+   Bắt đầu từ wrapper .relative bọc TabView + nút (content display flex) */
+.report-dialog .p-dialog-content > .relative {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.report-dialog .p-tabview {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+/* nút hành động nằm trong hàng tab, dạt phải — phủ đúng chiều cao
+   nav tab để cụm nút căn giữa theo hàng tab, không bị đẩy lên trên */
+.report-dialog .dialog-tab-actions {
+  position: absolute;
+  top: 0;
+  right: 0;
+  height: 3rem; /* chiều cao .p-tabview-nav (padding .75rem 1rem + text) */
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* icon/label căn giữa theo cả 2 chiều trong nút */
+.report-dialog .dialog-tab-actions .p-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+/* chừa chỗ bên phải nav để nút không đè lên tab cuối */
+.report-dialog .p-tabview-nav {
+  padding-right: 1rem;
+}
+
+/* nút chỉ hiện icon khi dialog hẹp — áp cả 2: viewport < md,
+   hoặc dialog (70vw) hẹp hơn 36rem trên màn mid-size */
+.report-dialog.p-dialog {
+  container-type: inline-size;
+}
+
+@media (max-width: 767px) {
+  .report-dialog .dialog-tab-actions .p-button .p-button-label {
+    display: none;
+  }
+
+  .report-dialog .dialog-tab-actions .p-button .p-button-icon {
+    margin-right: 0;
+  }
+
+  .report-dialog .dialog-tab-actions .p-button {
+    padding: 0.4375rem 0.7rem;
+  }
+}
+
+@container (max-width: 36rem) {
+  .report-dialog .dialog-tab-actions .p-button .p-button-label {
+    display: none;
+  }
+
+  .report-dialog .dialog-tab-actions .p-button .p-button-icon {
+    margin-right: 0;
+  }
+
+  .report-dialog .dialog-tab-actions .p-button {
+    padding: 0.4375rem 0.7rem;
+  }
+}
+
+.report-dialog .p-tabview-panels {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  padding: 0; /* bỏ padding ngoài của panels, pre tự có padding riêng */
+}
+.report-dialog .p-tabview-panel {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  padding-top: 1rem;
+}
+
+/* nội dung report trong dialog: wrapper giữ radius + overflow hidden
+   để clip scrollbar góc vuông; pre trong suốt cuộn bên trong */
+.report-dialog .report-pre-wrap {
+  flex: 1;
+  min-height: 0;
   border-radius: 6px;
   background: #111827;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* textarea sửa được trong dialog — style giống pre cũ */
+.report-dialog .report-pre {
+  display: block;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  margin: 0;
+  padding: 1.25rem;
+  border: none;
+  outline: none;
+  resize: none;
+  background: transparent;
   color: #f3f4f6;
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
     monospace;
   font-size: 0.875rem;
   line-height: 1.5;
-  white-space: pre;
+  white-space: pre-wrap; /* rớt dòng, không cuộn ngang */
+  overflow-wrap: anywhere;
   overflow: auto;
+  /* scrollbar đồng nhất với nền tối */
+  scrollbar-width: thin;
+  scrollbar-color: #374151 #111827;
+}
+
+/* giống scrollbar .preview-input ngoài dialog */
+.report-dialog .report-pre::-webkit-scrollbar {
+  width: 8px;
+  background: transparent;
+}
+
+.report-dialog .report-pre::-webkit-scrollbar-thumb {
+  background: #374151;
+  border-radius: 4px;
+}
+
+.report-dialog .report-pre::-webkit-scrollbar-thumb:hover {
+  background: #4b5563;
+}
+
+/*
+ * Panel dropdown của 4 MultiSelect filter — panel mặc định appendTo="body"
+ * nên viết KHÔNG scoped, chọn theo class panelClass gắn ở template.
+ * Panel giãn theo option dài nhất nhưng capped — option vượt cap thì
+ * "..." (ellipsis), hover vào hiện tooltip full text (v-tooltip ở slot
+ * #option trong template).
+ */
+.p-multiselect-panel.report-filter-panel {
+  width: max-content;
+  max-width: min(22rem, 90vw);
+}
+
+.p-multiselect-panel.report-filter-panel .filter-option {
+  display: block;
+  min-width: 0; /* flex item mặc định min-width:auto không co được */
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 </style>
