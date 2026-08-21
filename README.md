@@ -20,6 +20,9 @@ Một lệnh — chạy cùng lúc backend + frontend (Ctrl+C dừng cả hai):
 Hoặc chạy riêng từng phần:
 
 ```bash
+sudo apt install python3-pip # Cài BE lần đầu
+pip3 install --break-system-packages -r requirements.txt # Cài BE lần đầu
+
 python3 backend/server.py        # backend, http://127.0.0.1:8765
 python3 backend/server.py 9000   # port khác (sửa target proxy trong frontend/vite.config.js)
 
