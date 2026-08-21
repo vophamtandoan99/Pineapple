@@ -97,6 +97,9 @@ def tfs_request(creds, url, body=None):
         if body is None:
             r = requests.get(url, auth=auth, headers=headers, timeout=60)
         else:
+            # TFS từ chối POST thiếu Content-Type: trả 415 với message
+            # "Content-Type of ... not supported. Valid ... application/json".
+            headers["Content-Type"] = "application/json"
             r = requests.post(url, auth=auth, headers=headers,
                               data=json.dumps(body), timeout=60)
         return 200 <= r.status_code < 300, r.text
