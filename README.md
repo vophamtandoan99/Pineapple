@@ -11,19 +11,21 @@ backend/    # Python stdlib — API server (port 8765) + CLI
 
 ## Chạy
 
-Terminal 1 — backend:
+Một lệnh — chạy cùng lúc backend + frontend (Ctrl+C dừng cả hai):
 
 ```bash
-python3 backend/server.py        # http://127.0.0.1:8765
-python3 backend/server.py 9000   # port khác
+./dev.sh                         # BE :8765, FE :5173 (Vite proxy /api -> 127.0.0.1:8765)
 ```
 
-Terminal 2 — frontend:
+Hoặc chạy riêng từng phần:
 
 ```bash
+python3 backend/server.py        # backend, http://127.0.0.1:8765
+python3 backend/server.py 9000   # port khác (sửa target proxy trong frontend/vite.config.js)
+
 cd frontend
 npm install
-npm run dev                      # Vite proxy /api -> 127.0.0.1:8765
+npm run dev                      # frontend
 ```
 
 ## Cấu hình

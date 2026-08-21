@@ -26,19 +26,6 @@
     min-height: 0;
     overflow-y: auto;
 
-    > li:last-child {
-        margin-top: auto;
-        margin-left: -1.5rem;
-        margin-right: -1.5rem;
-
-        img {
-            display: block;
-            width: 100%;
-            border-bottom-left-radius: $borderRadius;
-            border-bottom-right-radius: $borderRadius;
-        }
-    }
-
     .layout-root-menuitem {
         > .layout-menuitem-root-text {
             font-size: 0.857rem;
@@ -172,4 +159,21 @@
 .layout-submenu-enter-active {
     overflow: hidden;
     transition: max-height 1s ease-in-out;
+}
+
+// Ảnh nền đáy sidebar: xoay 45°, to hơn, tràn góc dưới-phải (sidebar overflow hidden cắt phần ngoài)
+.sidebar-footer {
+    position: relative;
+    height: 0;
+    margin: 0;
+
+    img {
+        position: absolute;
+        right: 0;
+        bottom: 0;
+        width: 220%;
+        transform: translate(50%, 15%) rotate(-30deg);
+        opacity: 0.3;
+        pointer-events: none;
+    }
 }
