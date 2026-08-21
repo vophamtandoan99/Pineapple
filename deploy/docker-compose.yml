@@ -1,0 +1,13 @@
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: doanvpt/pineapple:latest
+    container_name: reports-app
+    restart: unless-stopped
+    ports:
+      - "7878:80"
+    # config.json ghi từ Cài đặt trong app — bind mount để giữ lại sau khi rebuild
+    volumes:
+      - ../backend/config.json:/app/backend/config.json

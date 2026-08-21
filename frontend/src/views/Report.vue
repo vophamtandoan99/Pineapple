@@ -1,13 +1,16 @@
 <script setup>
-import { reactive, ref, computed, watch, onMounted } from "vue";
+import { reactive, ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from "vue";
 import { useRouter } from "vue-router";
 import { useToast } from "primevue/usetoast";
 import { useAuth } from "@/service/AuthService";
 import { useProject } from "@/service/ProjectService";
+import { apiFetch } from "@/service/ApiLoader";
+import ClearableMultiSelect from "@/components/ClearableMultiSelect.vue";
+import AppLoader from "@/components/AppLoader.vue";
 
 const router = useRouter();
 const toast = useToast();
-const { fullname, sessionExpired } = useAuth();
+const { user, fullname, sessionExpired } = useAuth();
 const { currentProject } = useProject();
 
 // ---------- data ----------
@@ -18,7 +21,38 @@ const filterState = ref([]);
 const filterIteration = ref([]);
 const filterType = ref([]);
 const filterParent = ref([]);
+// filter PR: chỉ hiện item liên kết với pull request trong khoảng ngày chọn
+// (Calendar range: mảng 1 hoặc 2 Date). Bỏ chọn = hết filter.
+const prRange = ref(null);
+const prIds = ref(new Set());
+const prCount = ref(0);
+// item theo PR: chọn 1/nhiều PR từ MultiSelect lazy-load, lọc item có link PR đó
+const prFilter = ref([]);
+const prIdsByPr = ref(new Set());
+// danh sách PR cho MultiSelect: flat đã load, group theo ngày khi render
+const prOptions = ref([]);
+const PR_PAGE = 50;
+const prListDone = ref(false);
+const prListLoading = ref(false);
+const prListBound = ref(false);
+// spinner của table trong lúc fetch /api/pr-items
+const prLoading = ref(false);
+const prActive = computed(() => !!(prRange.value && prRange.value[0]));
+const prNumberActive = computed(() => prFilter.value.length > 0);
+// có filter nào đang bật (search / ngày PR / số PR / 4 MultiSelect) — đổi icon nút reset
+const filterActive = computed(
+  () =>
+    !!search.value.trim() ||
+    prActive.value ||
+    prNumberActive.value ||
+    filterState.value.length > 0 ||
+    filterIteration.value.length > 0 ||
+    filterType.value.length > 0 ||
+    filterParent.value.length > 0,
+);
 const picked = reactive({ today: new Set(), next: new Set() });
+// report thiếu display name thì dùng username thay thế? (Cài đặt)
+const fullnameFallbackUser = ref(true);
 const reportDate = ref(new Date());
 const previewTab = ref(0);
 const resultDialog = ref(false);
@@ -64,8 +98,16 @@ const iterationOptions = computed(() =>
     .reverse()
     .map((it) => ({ label: sprintLabel(it), value: it })),
 );
+// bỏ dấu tiếng Việt: nhập không dấu vẫn match tiêu đề có dấu (và ngược lại)
+const noAccent = (s) =>
+  String(s || "")
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/đ/g, "d")
+    .replace(/Đ/g, "D")
+    .toLowerCase();
 const visibleItems = computed(() => {
-  const q = search.value.toLowerCase().trim();
+  const q = noAccent(search.value).trim();
   const st = filterState.value;
   const fit = filterIteration.value;
   const ft = filterType.value;
@@ -76,7 +118,11 @@ const visibleItems = computed(() => {
       (!fit.length || fit.includes(it.iteration)) &&
       (!ft.length || ft.includes(it.type)) &&
       (!fp.length || fp.includes(it.parent)) &&
-      (!q || String(it.id) === q || it.title.toLowerCase().includes(q)),
+      (!prActive.value || prIds.value.has(it.id)) &&
+      (!prNumberActive.value || prIdsByPr.value.has(it.id)) &&
+      (!q ||
+        String(it.id) === search.value.trim() ||
+        noAccent(it.title).includes(q)),
   );
 });
 // sort theo iteration để item cùng sprint đứng cạnh nhau
@@ -91,10 +137,9 @@ const sprintLabel = (it) =>
 const optionLabelOf = (o) => (typeof o === "string" ? o : o.label);
 
 // ---------- load ----------
-onMounted(async () => {
-  reportDate.value = new Date();
+const loadItems = async () => {
   try {
-    const r = await fetch("/api/items");
+    const r = await apiFetch("/api/items", { silent: true });
     if (r.status === 401) {
       sessionExpired(toast, router);
       return;
@@ -112,6 +157,7 @@ onMounted(async () => {
     if (j.fullname) {
       fullname.value = j.fullname;
     }
+    fullnameFallbackUser.value = j.fullnameFallbackUser !== false;
   } catch (e) {
     toast.add({
       severity: "error",
@@ -122,7 +168,184 @@ onMounted(async () => {
   } finally {
     loadingItems.value = false;
   }
+};
+
+// Lưu Cài đặt (rules start/end, cách tính %, tên...) -> nạp lại items +
+// ngày start/end để preview <pre> áp ngay config mới, không cần reload trang
+const onSettingsUpdated = () => {
+  loadItems();
+  refreshStateDates();
+};
+onMounted(() => {
+  reportDate.value = new Date();
+  loadItems();
+  window.addEventListener("settings-updated", onSettingsUpdated);
 });
+onBeforeUnmount(() => {
+  window.removeEventListener("settings-updated", onSettingsUpdated);
+});
+
+// ---------- filter PR theo ngày ----------
+const toISODate = (d) => {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+};
+async function loadPrItems() {
+  if (!prActive.value) {
+    prIds.value = new Set();
+    prCount.value = 0;
+    return;
+  }
+  // range chưa đủ 2 ngày: coi ngày đầu là lọc 1 ngày
+  const from = toISODate(prRange.value[0]);
+  const to = prRange.value[1] ? toISODate(prRange.value[1]) : from;
+  prLoading.value = true;
+  try {
+    const r = await apiFetch(`/api/pr-items?from=${from}&to=${to}`, {
+      silent: true,
+    });
+    if (r.status === 401) {
+      sessionExpired(toast, router);
+      return;
+    }
+    const j = await r.json();
+    if (j.error) throw new Error(j.error);
+    prIds.value = new Set(j.ids || []);
+    prCount.value = (j.prs || []).length;
+  } catch (e) {
+    toast.add({
+      severity: "error",
+      summary: "Lỗi tải pull requests",
+      detail: e.message,
+      life: 4000,
+    });
+    prRange.value = null;
+  } finally {
+    prLoading.value = false;
+  }
+}
+watch(prRange, loadPrItems);
+
+// đổi/bỏ khoảng ngày tạo PR -> danh sách option PR lọc theo ngày mới:
+// reset list đã load, lazy load lại (panel đang mở thì nạp trang đầu ngay)
+watch(prRange, () => {
+  prOptions.value = [];
+  prListDone.value = false;
+  if (prPanelOpen.value) loadPrPage();
+});
+
+// ---------- item theo PR: MultiSelect lazy-load + group theo ngày ----------
+// options giữ flat (append khi lazy load), group theo day khi render
+const prGrouped = computed(() => {
+  const out = [];
+  let cur = null;
+  for (const o of prOptions.value) {
+    if (!cur || cur.label !== o.day) {
+      cur = { label: o.day, items: [] };
+      out.push(cur);
+    }
+    cur.items.push(o);
+  }
+  return out;
+});
+
+async function loadPrPage() {
+  if (prListLoading.value || prListDone.value) return;
+  prListLoading.value = true;
+  try {
+    const params = new URLSearchParams({
+      skip: prOptions.value.length,
+      top: PR_PAGE,
+    });
+    // đang chọn khoảng ngày tạo PR -> option PR cũng lọc theo khoảng đó
+    if (prActive.value) {
+      params.set("from", toISODate(prRange.value[0]));
+      params.set(
+        "to",
+        prRange.value[1] ? toISODate(prRange.value[1]) : toISODate(prRange.value[0]),
+      );
+    }
+    const r = await apiFetch(`/api/prs?${params}`, { silent: true });
+    if (r.status === 401) {
+      sessionExpired(toast, router);
+      return;
+    }
+    const j = await r.json();
+    if (j.error) throw new Error(j.error);
+    prOptions.value.push(...(j.prs || []));
+    if (!j.hasMore) prListDone.value = true;
+  } catch (e) {
+    toast.add({
+      severity: "error",
+      summary: "Lỗi tải danh sách PR",
+      detail: e.message,
+      life: 4000,
+    });
+    prListDone.value = true; // dừng lazy load, tránh loop lỗi
+  } finally {
+    prListLoading.value = false;
+  }
+}
+
+// panel MultiSelect appendTo body: gắn scroll listener khi mở lần đầu,
+// cuộn gần đáy thì load trang tiếp
+const prPanelOpen = ref(false);
+const onPrPanelScroll = (e) => {
+  const el = e.target;
+  if (el.scrollTop + el.clientHeight >= el.scrollHeight - 100) loadPrPage();
+};
+const onPrPanelShow = async () => {
+  prPanelOpen.value = true;
+  await loadPrPage(); // trang đầu
+  if (prListBound.value) return;
+  await nextTick();
+  // scroll event không bubble: gắn đúng vào wrapper danh sách bên trong panel
+  const scroller = document.querySelector(
+    ".pr-select-panel .p-multiselect-items-wrapper",
+  );
+  if (!scroller) return;
+  scroller.addEventListener("scroll", onPrPanelScroll, { passive: true });
+  prListBound.value = true;
+};
+
+// chọn PR -> load item của các PR đó
+async function loadPrItemsByPrs() {
+  if (!prNumberActive.value) {
+    prIdsByPr.value = new Set();
+    return;
+  }
+  prLoading.value = true;
+  try {
+    const r = await apiFetch(`/api/pr-items?prs=${prFilter.value.join(",")}`, {
+      silent: true,
+    });
+    if (r.status === 401) {
+      sessionExpired(toast, router);
+      return;
+    }
+    const j = await r.json();
+    if (j.error) throw new Error(j.error);
+    prIdsByPr.value = new Set(j.ids || []);
+    // item được add vào PR nhưng không gán cho user (US người khác...) —
+    // thêm vào table để hiện được khi filter PR đang chọn
+    const known = new Set(items.value.map((i) => i.id));
+    const extra = (j.items || []).filter((i) => !known.has(i.id));
+    if (extra.length) items.value.push(...extra);
+  } catch (e) {
+    toast.add({
+      severity: "error",
+      summary: "Lỗi tải pull requests",
+      detail: e.message,
+      life: 4000,
+    });
+    prFilter.value = [];
+  } finally {
+    prLoading.value = false;
+  }
+}
+watch(prFilter, loadPrItemsByPrs);
 
 // ---------- pick ----------
 const rows = ref(10);
@@ -144,6 +367,14 @@ function toggleAll(group) {
 function clearPick() {
   picked.today.clear();
   picked.next.clear();
+  // clear toàn bộ filter: date PR, số PR, search, các MultiSelect
+  prRange.value = null; // watch sẽ reset prIds/prCount
+  prFilter.value = []; // watch sẽ reset prIdsByPr
+  search.value = "";
+  filterState.value = [];
+  filterIteration.value = [];
+  filterType.value = [];
+  filterParent.value = [];
 }
 function rowClass(data) {
   return {
@@ -171,14 +402,17 @@ const nextItems = computed(() =>
 
 const chatMd = computed(() => {
   const dateStr = ddMMyyyy(reportDate.value);
-  const who = fullname.value || "...";
+  const who =
+    fullname.value ||
+    (fullnameFallbackUser.value ? user.value : "") ||
+    "...";
   const lines = [
     `*Báo cáo nhân sự* ${dateStr}`,
     `*Nhân sự:* ${who}`,
     "*Công việc:*",
   ];
   for (const it of todayItems.value)
-    lines.push(`- ${escapeMd(it.type)} ${it.id}: ${escapeMd(it.title)} (100%)`);
+    lines.push(`- ${escapeMd(it.type)} ${it.id}: ${escapeMd(it.title)} (${it.percent ?? 100}%)`);
   if (!todayItems.value.length) lines.push("- ...");
   lines.push("*Công việc ngày tiếp theo:*");
   for (const it of nextItems.value)
@@ -204,14 +438,54 @@ const larkMd = computed(() => {
   ];
   for (const it of merged) {
     const link = taskBase.value ? `${taskBase.value}${it.id}` : `${it.id}`;
+    // có ngày vào trạng thái (rules cấu hình) thì dùng, không thì fallback
+    const sd = stateDates.value[it.id];
+    const ed = endDates.value[it.id];
+    const start = sd ? fmtIso(sd) : dateStr;
+    const end = ed ? fmtIso(ed) : "";
     lines.push(
-      `| ${escapeMd(it.state)} | ${dateStr} |  |  | ${escapeMd(it.type)} | ${
+      `| ${escapeMd(it.state)} | ${start} | ${end} |  | ${escapeMd(it.type)} | ${
         it.id
       } | ${escapeMd(it.title)} | ${link} |`,
     );
   }
   return lines.join("\n");
 });
+
+// ---------- start/end date Lark theo trạng thái ----------
+// Cấu hình "Trạng thái bắt đầu/kết thúc (Lark)" trong Cài đặt: khi có,
+// Start/End date bảng Lark = ngày item chuyển sang trạng thái đó (server
+// đọc revisions TFS). Lấy async theo item đang chọn (debounce, chỉ item
+// được chọn nên ít call); chưa có ngày thì fallback như cũ (start = ngày
+// báo cáo, end = trống).
+const stateDates = ref({});
+const endDates = ref({});
+let stateDatesTimer = null;
+const refreshStateDates = () => {
+  const ids = [...picked.today, ...picked.next];
+  clearTimeout(stateDatesTimer);
+  if (!ids.length) {
+    stateDates.value = {};
+    endDates.value = {};
+    return;
+  }
+  stateDatesTimer = setTimeout(async () => {
+    try {
+      const r = await apiFetch(`/api/state-dates?ids=${ids.join(",")}`, {
+        silent: true,
+      });
+      if (!r.ok) return;
+      const j = await r.json();
+      stateDates.value = j.startDates || {};
+      endDates.value = j.endDates || {};
+    } catch {
+      // lỗi mạng — giữ fallback
+    }
+  }, 400);
+};
+watch(() => [...picked.today, ...picked.next], refreshStateDates);
+const fmtIso = (iso) =>
+  `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}`;
 
 const previewMd = computed(() => {
   if (previewTab.value === 0) return chatMd.value;
@@ -258,8 +532,8 @@ function makeReport() {
   if (!picked.today.size && !picked.next.size) {
     toast.add({
       severity: "warn",
-      summary: "Chưa chọn item",
-      detail: "Chọn ít nhất 1 item (cột Hôm nay hoặc Mai)",
+      summary: "Rỗng",
+      detail: "Chưa chọn item",
       life: 4000,
     });
     return;
@@ -287,6 +561,7 @@ const resultText = computed({
     dirty[t] = true;
   },
 });
+
 // dialog đổi tab thì preview ngoài nhảy về tab nội dung tương ứng —
 // sửa trong dialog xong đóng lại, card ngoài đang đúng tab, thấy ngay thay đổi
 watch(resultTab, (i) => (previewTab.value = dialogTabIndexMap[i]));
@@ -336,31 +611,20 @@ async function copyText(text) {
     <!-- item picker -->
     <div class="col-12 xl:col-7">
       <div class="card">
-        <div class="flex justify-content-between align-items-center mb-4">
+        <div class="flex align-items-center mb-3">
           <h5 class="m-0 flex align-items-center">
             Chọn công việc
             <Tag v-if="currentProject" :value="currentProject" class="ml-2" />
           </h5>
         </div>
-        <div class="mb-3">
-          <IconField iconPosition="left" class="w-full">
-            <InputIcon class="pi pi-search" />
-            <InputText
-              v-model="search"
-              placeholder="Tìm theo ID hoặc tiêu đề..."
-              class="w-full"
-            />
-          </IconField>
-        </div>
         <div class="flex gap-2 mb-3">
-          <MultiSelect
+          <ClearableMultiSelect
             v-model="filterState"
             :options="stateOptions"
-            placeholder="Mọi State"
+            placeholder="State"
             :filter="true"
             class="flex-1 min-w-0"
-            panelClass="report-filter-panel"
-          >
+            panelClass="report-filter-panel">
             <template #option="s">
               <span
                 class="filter-option"
@@ -368,17 +632,16 @@ async function copyText(text) {
                 >{{ optionLabelOf(s.option) }}</span
               >
             </template>
-          </MultiSelect>
-          <MultiSelect
+          </ClearableMultiSelect>
+          <ClearableMultiSelect
             v-model="filterIteration"
             :options="iterationOptions"
             optionLabel="label"
             optionValue="value"
-            placeholder="Mọi sprint"
+            placeholder="Sprint"
             :filter="true"
             class="flex-1 min-w-0"
-            panelClass="report-filter-panel"
-          >
+            panelClass="report-filter-panel">
             <template #option="s">
               <span
                 class="filter-option"
@@ -386,15 +649,14 @@ async function copyText(text) {
                 >{{ optionLabelOf(s.option) }}</span
               >
             </template>
-          </MultiSelect>
-          <MultiSelect
+          </ClearableMultiSelect>
+          <ClearableMultiSelect
             v-model="filterType"
             :options="typeOptions"
-            placeholder="Mọi loại"
+            placeholder="Type"
             :filter="true"
             class="flex-1 min-w-0"
-            panelClass="report-filter-panel"
-          >
+            panelClass="report-filter-panel">
             <template #option="s">
               <span
                 class="filter-option"
@@ -402,17 +664,16 @@ async function copyText(text) {
                 >{{ optionLabelOf(s.option) }}</span
               >
             </template>
-          </MultiSelect>
-          <MultiSelect
+          </ClearableMultiSelect>
+          <ClearableMultiSelect
             v-model="filterParent"
             :options="parentOptions"
             optionLabel="label"
             optionValue="value"
-            placeholder="Mọi parent"
+            placeholder="Parent"
             :filter="true"
             class="flex-1 min-w-0"
-            panelClass="report-filter-panel"
-          >
+            panelClass="report-filter-panel">
             <template #option="s">
               <span
                 class="filter-option"
@@ -420,31 +681,90 @@ async function copyText(text) {
                 >{{ optionLabelOf(s.option) }}</span
               >
             </template>
-          </MultiSelect>
+          </ClearableMultiSelect>
         </div>
-        <div
-          class="flex flex-wrap gap-2 mb-4 align-items-center justify-content-end"
-        >
+        <!-- Ngày tạo PR + Item theo PR luôn cùng 1 dòng -->
+        <div class="flex gap-2 mb-2 flex-nowrap">
+          <Calendar
+            v-model="prRange"
+            selectionMode="range"
+            showButtonBar
+            showIcon
+            iconDisplay="input"
+            :manualInput="false"
+            placeholder="Ngày tạo PR"
+            dateFormat="dd/mm/yy"
+            class="pr-range-cal flex-1">
+            <!-- cụm icon bên phải field: ✕ xóa range + chip số PR + branch/spinner.
+                 Đặt chung 1 flex để tự xếp cạnh nhau, không overlap khi chip rộng -->
+            <template #inputicon="slotProps">
+              <span class="pr-field-icons">
+                <i
+                  v-if="prActive && !prLoading"
+                  class="pi pi-times pr-clear-date-icon"
+                  @click.stop="prRange = null"></i>
+                <span
+                  v-if="prActive && !prLoading"
+                  class="pr-count-icon"
+                  @click="slotProps.clickCallback"
+                  >{{ prCount }} PR</span
+                >
+                <i
+                  v-if="prLoading"
+                  class="pi pi-spin pi-spinner pr-spinner-icon"
+                  @click="slotProps.clickCallback"></i>
+                <img
+                  v-else
+                  src="/icons/code-branch-icon.svg"
+                  alt=""
+                  class="pr-branch-icon"
+                  @click="slotProps.clickCallback" />
+              </span>
+            </template>
+          </Calendar>
+          <ClearableMultiSelect
+            v-model="prFilter"
+            :options="prGrouped"
+            optionGroupLabel="label"
+            optionGroupChildren="items"
+            optionLabel="label"
+            optionValue="value"
+            placeholder="Pull Request"
+            :filter="true"
+            filterPlaceholder="Tìm PR..."
+            scrollHeight="12rem"
+            appendTo="self"
+            class="flex-1 min-w-0"
+            panelClass="pr-select-panel"
+            @show="onPrPanelShow"
+            @hide="prPanelOpen = false">
+            <template #option="s">
+              <span
+                class="filter-option"
+                v-tooltip.bottom="optionLabelOf(s.option)"
+                >{{ optionLabelOf(s.option) }}</span
+              >
+            </template>
+          </ClearableMultiSelect>
+        </div>
+        <!-- search + reset filter cùng hàng: search fill chỗ còn lại -->
+        <div class="flex gap-2 mb-4 flex-nowrap align-items-center">
+          <IconField iconPosition="left" class="flex-1 min-w-0">
+            <InputIcon class="pi pi-search" />
+            <InputText
+              v-model="search"
+              placeholder="Tìm theo ID hoặc tiêu đề..."
+              class="w-full" />
+          </IconField>
           <Button
-            label="Chọn tất cả (cũ)"
-            class="p-button-outlined p-button-sm"
-            @click="toggleAll('today')"
-          />
-          <Button
-            label="Chọn tất cả (mới)"
-            class="p-button-outlined p-button-sm"
-            @click="toggleAll('next')"
-          />
-          <Button
-            label="Clear"
-            icon="pi pi-trash"
-            class="p-button-outlined p-button-danger p-button-sm"
-            @click="clearPick"
-          />
+            label="Reset filter"
+            :icon="filterActive ? 'pi pi-filter' : 'pi pi-filter-slash'"
+            class="p-button-outlined p-button-danger p-button-sm flex-shrink-0"
+            @click="clearPick" />
         </div>
         <DataTable
           :value="groupedItems"
-          :loading="loadingItems"
+          :loading="loadingItems || prLoading"
           :rows="rows"
           scrollable
           scrollHeight="51vh"
@@ -455,14 +775,19 @@ async function copyText(text) {
           responsiveLayout="scroll"
           :rowClass="rowClass"
           currentPageReportTemplate="Hiện {first}-{last} / {totalRecords}"
-          paginatorTemplate="FirstPageLink PrevPageLink PageLinks NextPageLink LastPageLink RowsPerPageDropdown CurrentPageReport"
-        >
+          paginatorTemplate="FirstPageLink PrevPageLink PageLinks NextPageLink LastPageLink RowsPerPageDropdown CurrentPageReport">
           <template #empty>
             <div
-              class="flex flex-column align-items-center justify-content-center py-5 text-500"
-            >
-              <i class="pi pi-inbox text-4xl mb-2"></i>
-              <span>Không có dữ liệu</span>
+              class="flex min-h-52 flex-column align-items-center justify-content-center py-5 text-500">
+              <i
+                v-if="!loadingItems && !prLoading"
+                class="pi pi-inbox text-4xl mb-2"></i>
+              <span v-if="!loadingItems && !prLoading">Không có dữ liệu</span>
+            </div>
+          </template>
+          <template #loading>
+            <div class="flex flex-col items-center gap-2">
+              <AppLoader />
             </div>
           </template>
           <Column
@@ -470,8 +795,7 @@ async function copyText(text) {
             header="ID"
             :sortable="true"
             style="width: 5rem"
-            frozen
-          >
+            frozen>
             <template #body="slotProps">
               <a
                 :href="taskBase + slotProps.data.id"
@@ -487,8 +811,7 @@ async function copyText(text) {
             field="title"
             header="Tiêu đề"
             :sortable="true"
-            style="width: 40%"
-          >
+            style="width: 40%">
             <template #body="slotProps">
               <div class="flex align-items-center" style="column-gap: 0.5rem">
                 <span
@@ -506,13 +829,11 @@ async function copyText(text) {
               </div>
               <div
                 class="flex align-items-center flex-wrap mt-1"
-                style="column-gap: 0.5rem"
-              >
+                style="column-gap: 0.5rem">
                 <ProgressBar
                   :value="progressOf(slotProps.data)"
                   :showValue="false"
-                  style="height: 4px; width: 8rem"
-                />
+                  style="height: 4px; width: 8rem" />
                 <span class="italic text-500 text-sm w-2rem"
                   >{{ progressOf(slotProps.data) }}%</span
                 >
@@ -523,8 +844,7 @@ async function copyText(text) {
             field="state"
             header="Trạng thái"
             :sortable="true"
-            style="min-width: 15rem"
-          >
+            style="min-width: 15rem">
             <template #body="slotProps">
               <Tag
                 :value="slotProps.data.state"
@@ -534,8 +854,7 @@ async function copyText(text) {
                     background: '#b2b2b2',
                     color: '#1f2937',
                   }
-                "
-              />
+                " />
             </template>
           </Column>
           <Column style="min-width: 5rem" frozen alignFrozen="right">
@@ -543,8 +862,7 @@ async function copyText(text) {
               <Checkbox
                 :modelValue="allPicked('next')"
                 binary
-                @update:modelValue="toggleAll('next')"
-              />
+                @update:modelValue="toggleAll('next')" />
               <span class="ml-2">Mới</span>
             </template>
             <template #body="slotProps">
@@ -552,8 +870,7 @@ async function copyText(text) {
                 <Checkbox
                   :modelValue="picked.next.has(slotProps.data.id)"
                   binary
-                  @update:modelValue="toggle(slotProps.data.id, 'next')"
-                />
+                  @update:modelValue="toggle(slotProps.data.id, 'next')" />
               </div>
             </template>
           </Column>
@@ -562,8 +879,7 @@ async function copyText(text) {
               <Checkbox
                 :modelValue="allPicked('today')"
                 binary
-                @update:modelValue="toggleAll('today')"
-              />
+                @update:modelValue="toggleAll('today')" />
               <span class="ml-2">Cũ</span>
             </template>
             <template #body="slotProps">
@@ -571,8 +887,7 @@ async function copyText(text) {
                 <Checkbox
                   :modelValue="picked.today.has(slotProps.data.id)"
                   binary
-                  @update:modelValue="toggle(slotProps.data.id, 'today')"
-                />
+                  @update:modelValue="toggle(slotProps.data.id, 'today')" />
               </div>
             </template>
           </Column>
@@ -589,14 +904,12 @@ async function copyText(text) {
             v-model="reportDate"
             dateFormat="dd/mm/yy"
             :showIcon="true"
-            class="flex-1"
-          />
+            class="flex-1" />
           <Button
             label="Tạo report"
             icon="pi pi-file"
             @click="makeReport"
-            class="flex-1"
-          />
+            class="make-report-btn flex-1" />
         </div>
 
         <div class="relative">
@@ -608,21 +921,18 @@ async function copyText(text) {
                     icon="pi pi-refresh"
                     class="p-button-text p-button-sm"
                     aria-label="Reset về nội dung tự động"
-                    @click="resetTab"
-                  />
+                    @click="resetTab" />
                   <Button
                     icon="pi pi-copy"
                     class="p-button-text p-button-sm"
                     aria-label="Copy"
-                    @click="copyText(tabText)"
-                  />
+                    @click="copyText(tabText)" />
                 </div>
                 <textarea
                   v-model="tabText"
                   class="preview-input"
                   wrap="off"
-                  spellcheck="false"
-                ></textarea>
+                  spellcheck="false"></textarea>
               </div>
             </TabPanel>
             <TabPanel header="Lark">
@@ -632,21 +942,18 @@ async function copyText(text) {
                     icon="pi pi-refresh"
                     class="p-button-text p-button-sm"
                     aria-label="Reset về nội dung tự động"
-                    @click="resetTab"
-                  />
+                    @click="resetTab" />
                   <Button
                     icon="pi pi-copy"
                     class="p-button-text p-button-sm"
                     aria-label="Copy"
-                    @click="copyText(tabText)"
-                  />
+                    @click="copyText(tabText)" />
                 </div>
                 <textarea
                   v-model="tabText"
                   class="preview-input"
                   wrap="off"
-                  spellcheck="false"
-                ></textarea>
+                  spellcheck="false"></textarea>
               </div>
             </TabPanel>
             <TabPanel header="Full">
@@ -656,21 +963,18 @@ async function copyText(text) {
                     icon="pi pi-refresh"
                     class="p-button-text p-button-sm"
                     aria-label="Reset về nội dung tự động"
-                    @click="resetTab"
-                  />
+                    @click="resetTab" />
                   <Button
                     icon="pi pi-copy"
                     class="p-button-text p-button-sm"
                     aria-label="Copy"
-                    @click="copyText(tabText)"
-                  />
+                    @click="copyText(tabText)" />
                 </div>
                 <textarea
                   v-model="tabText"
                   class="preview-input"
                   wrap="off"
-                  spellcheck="false"
-                ></textarea>
+                  spellcheck="false"></textarea>
               </div>
             </TabPanel>
           </TabView>
@@ -678,8 +982,7 @@ async function copyText(text) {
             icon="pi pi-refresh"
             class="p-button-outlined p-button-sm reset-all-btn"
             v-tooltip.bottom="'Reset preview cả 3 tab'"
-            @click="resetAll"
-          />
+            @click="resetAll" />
         </div>
       </div>
     </div>
@@ -697,8 +1000,7 @@ async function copyText(text) {
         display: 'flex',
         overflow: 'hidden',
       }"
-      @show="reflowInkBar"
-    >
+      @show="reflowInkBar">
       <div class="relative">
         <TabView ref="resultTabView" v-model:activeIndex="resultTab">
           <TabPanel header="Full">
@@ -706,8 +1008,7 @@ async function copyText(text) {
               <textarea
                 v-model="resultText"
                 class="report-pre"
-                spellcheck="false"
-              ></textarea>
+                spellcheck="false"></textarea>
             </div>
           </TabPanel>
           <TabPanel header="Chat">
@@ -715,8 +1016,7 @@ async function copyText(text) {
               <textarea
                 v-model="resultText"
                 class="report-pre"
-                spellcheck="false"
-              ></textarea>
+                spellcheck="false"></textarea>
             </div>
           </TabPanel>
           <TabPanel header="Lark">
@@ -724,8 +1024,7 @@ async function copyText(text) {
               <textarea
                 v-model="resultText"
                 class="report-pre"
-                spellcheck="false"
-              ></textarea>
+                spellcheck="false"></textarea>
             </div>
           </TabPanel>
         </TabView>
@@ -735,14 +1034,12 @@ async function copyText(text) {
             label="Copy"
             icon="pi pi-copy"
             class="p-button-outlined p-button-sm"
-            @click="copyText(resultText)"
-          />
+            @click="copyText(resultText)" />
           <Button
             :label="`Tải file (${reportFileName()})`"
             icon="pi pi-download"
             class="p-button-sm"
-            @click="downloadReport"
-          />
+            @click="downloadReport" />
         </div>
       </div>
     </Dialog>
@@ -757,6 +1054,82 @@ async function copyText(text) {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+
+/* Calendar range filter PR: chia đều hàng với MultiSelect PR (flex-1 mỗi bên) */
+.pr-range-cal {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+/* cụm icon phải của ô date PR: absolute 1 chỗ, các icon bên trong xếp flex
+   cạnh nhau theo gap — chip "12 PR" rộng bao nhiêu ✕ cũng không đè */
+.pr-field-icons {
+  position: absolute;
+  top: 50%;
+  right: 0.75rem;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  z-index: 1;
+}
+
+/* chip số PR thay icon calendar khi filter active */
+.pr-count-icon {
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.5;
+  padding: 0 0.4rem;
+  border-radius: var(--content-border-radius, 6px);
+  background: var(--primary-color);
+  color: var(--primary-color-text);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+/* nút "Tạo report": theme cho .p-button-label flex 1 1 auto — nút flex-1 rộng
+   làm icon dạt trái, label giãn giữa, tách rời nhau. Giữ label auto + cụm
+   icon-label sát nhau nằm giữa nút. */
+.make-report-btn {
+  justify-content: center;
+}
+
+.make-report-btn :deep(.p-button-label) {
+  flex: 0 1 auto;
+}
+
+.make-report-btn :deep(.p-button-icon) {
+  margin-right: 0.5rem;
+}
+
+/* nút ✕ xóa khoảng ngày tạo PR */
+.pr-clear-date-icon {
+  cursor: pointer;
+  font-size: 0.875rem;
+  color: var(--text-color-secondary);
+}
+
+.pr-clear-date-icon:hover {
+  color: var(--text-color);
+}
+
+.pr-spinner-icon {
+  cursor: pointer;
+}
+
+/* icon branch size chuẩn icon PrimeVue */
+.pr-branch-icon {
+  width: 1.5rem;
+  height: 1.5rem;
+  opacity: 0.4;
+  cursor: pointer;
+}
+
+.pr-range-cal :deep(.p-inputtext) {
+  width: 100%;
+  font-size: 0.875rem;
 }
 
 /* table-layout fixed: giữ width cột, td không giãn theo nội dung —
@@ -1061,12 +1434,24 @@ async function copyText(text) {
  * "..." (ellipsis), hover vào hiện tooltip full text (v-tooltip ở slot
  * #option trong template).
  */
-.p-multiselect-panel.report-filter-panel {
+.p-multiselect-panel.report-filter-panel,
+.p-multiselect-panel.pr-select-panel {
   width: max-content;
   max-width: min(22rem, 90vw);
 }
 
-.p-multiselect-panel.report-filter-panel .filter-option {
+/* panel PR: cap theo viewport height + chặn flip hẳn. PrimeVue absolute
+   position panel: thiếu chỗ dưới (đã cuộn trang) thì flip top âm lên trên
+   — đè ô "Ngày tạo PR". appendTo="self" cho panel absolute theo wrapper
+   div.relative này, nên top 100% luôn ghim panel ngay dưới MultiSelect. */
+.p-multiselect-panel.pr-select-panel {
+  max-height: 38vh;
+  overflow-y: auto;
+  top: 100% !important;
+}
+
+.p-multiselect-panel.report-filter-panel .filter-option,
+.p-multiselect-panel.pr-select-panel .filter-option {
   display: block;
   min-width: 0; /* flex item mặc định min-width:auto không co được */
   overflow: hidden;

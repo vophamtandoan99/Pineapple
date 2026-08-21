@@ -1,1 +1,0 @@
-import{_ as s,e as a,f as o,g as t}from"./index-921a8db4.js";const c={},r={className:"card"};function n(l,e){return a(),o("div",r,[...e[0]||(e[0]=[t("h5",null,"Empty Page",-1),t("p",null,"Use this page to start from scratch and place your custom content.",-1)])])}const p=s(c,[["render",n]]);export{p as default};

@@ -50,6 +50,8 @@ const applyScale = () => {
 };
 const onInputStyleChange = (value) => {
     $primevue.config.inputStyle = value;
+    // sync vào layoutConfig để watcher persist vào config backend
+    layoutConfig.inputStyle.value = value;
 };
 const onMenuModeChange = (value) => {
     layoutConfig.menuMode.value = value;

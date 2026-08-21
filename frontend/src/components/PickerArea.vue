@@ -16,16 +16,8 @@ defineEmits(['pick', 'retry']);
 
 <template>
     <div class="w-full flex flex-column">
-        <!-- loading -->
-        <template v-if="loading">
-            <div v-for="i in 3" :key="i" class="w-full flex align-items-center py-5 border-300 border-bottom-1">
-                <Skeleton width="3.5rem" height="3.5rem" border-radius="6px" class="flex-shrink-0" />
-                <div class="ml-4 flex flex-column w-full">
-                    <Skeleton width="60%" height="1.5rem" class="mb-2" />
-                    <Skeleton width="40%" height="1rem" />
-                </div>
-            </div>
-        </template>
+        <!-- loading: không hiện indicator — chờ dữ liệu về rồi render list -->
+        <div v-if="loading" aria-hidden="true"></div>
 
         <!-- error -->
         <div v-else-if="error" class="w-full flex flex-column align-items-center py-6">

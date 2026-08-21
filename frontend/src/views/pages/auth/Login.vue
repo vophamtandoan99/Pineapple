@@ -1,6 +1,6 @@
 <script setup>
 import { useLayout } from "@/layout/composables/layout";
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, watch } from "vue";
 import { useRouter } from "vue-router";
 import { useToast } from "primevue/usetoast";
 import AppConfig from "@/layout/AppConfig.vue";
@@ -13,19 +13,35 @@ const toast = useToast();
 
 const username = ref("");
 const password = ref("");
+const token = ref("");
+const collection = ref("");
+const authMode = ref("token");
+const authOptions = [
+  { label: "Token", value: "token" },
+  { label: "Mật khẩu", value: "password" },
+];
 const remember = ref(false);
 const loading = ref(false);
-const errorMsg = ref("");
 const submitted = ref(false);
 
 const logoUrl = computed(() => {
-    return `/layout/images/${layoutConfig.darkTheme.value ? 'logo-white' : 'logo-dark'}.svg`;
+    return `/layout/images/${layoutConfig.darkTheme.value ? 'logo-light' : 'logo-dark'}.svg`;
 });
 
 const usernameInvalid = computed(
-  () => submitted.value && !username.value.trim(),
+  () => submitted.value && authMode.value === "password" && !username.value.trim(),
 );
-const passwordInvalid = computed(() => submitted.value && !password.value);
+const passwordInvalid = computed(
+  () => submitted.value && authMode.value === "password" && !password.value,
+);
+const tokenInvalid = computed(
+  () => submitted.value && authMode.value === "token" && !token.value.trim(),
+);
+
+// Đổi tab: reset validate của tab trước
+watch(authMode, () => {
+  submitted.value = false;
+});
 
 onMounted(() => {
   const saved = localStorage.getItem(REMEMBER_KEY);
@@ -38,22 +54,29 @@ onMounted(() => {
 async function login() {
   if (loading.value) return;
   submitted.value = true;
-  if (usernameInvalid.value || passwordInvalid.value) return;
+  if (usernameInvalid.value || passwordInvalid.value || tokenInvalid.value) return;
   loading.value = true;
-  errorMsg.value = "";
+  const payload =
+    authMode.value === "token"
+      ? {
+          token: token.value.trim(),
+          collection: collection.value.trim(),
+          remember: remember.value,
+        }
+      : {
+          user: username.value.trim(),
+          password: password.value,
+          remember: remember.value,
+        };
   try {
     const r = await fetch("/api/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        user: username.value.trim(),
-        password: password.value,
-        remember: remember.value,
-      }),
+      body: JSON.stringify(payload),
     });
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(j.error || "Lỗi đăng nhập");
-    if (remember.value) {
+    if (authMode.value === "password" && remember.value) {
       localStorage.setItem(REMEMBER_KEY, username.value.trim());
     } else {
       localStorage.removeItem(REMEMBER_KEY);
@@ -61,12 +84,18 @@ async function login() {
     toast.add({
       severity: "success",
       summary: "Đăng nhập thành công",
-      detail: `Xin chào ${j.fullname || j.user || username.value.trim()}!`,
+      detail: `Xin chào ${j.fullname || j.user || "bạn"}!`,
       life: 3000,
     });
     await router.push("/");
   } catch (e) {
-    errorMsg.value = e.message;
+    // Lỗi từ server hiển thị qua toast — text dài tự wrap, không tràn form
+    toast.add({
+      severity: "error",
+      summary: "Đăng nhập thất bại",
+      detail: e.message,
+      life: 6000,
+    });
   } finally {
     loading.value = false;
   }
@@ -103,6 +132,16 @@ async function login() {
           </div>
 
           <form @submit.prevent="login" class="w-full flex flex-column gap-3">
+            <div class="flex justify-content-center">
+              <SelectButton
+                v-model="authMode"
+                :options="authOptions"
+                optionLabel="label"
+                optionValue="value"
+                class="auth-toggle" />
+            </div>
+
+            <template v-if="authMode === 'password'">
               <div class="flex flex-column gap-2">
                 <label
                   for="username1"
@@ -123,35 +162,80 @@ async function login() {
                 <small v-if="usernameInvalid" class="block p-error"
                   >Tài khoản là bắt buộc</small
                 >
+                <!-- Reserve 1 dòng hint để chiều cao khớp tab Token (chống nhảy UI) -->
+                <small v-else class="block text-600" style="visibility: hidden"
+                  >placeholder</small
+                >
               </div>
 
-            <div class="flex flex-column gap-2">
-              <label for="password1" class="block text-900 font-medium text-xl"
-                >Mật khẩu</label
-              >
+              <div class="flex flex-column gap-2">
+                <label for="password1" class="block text-900 font-medium text-xl"
+                  >Mật khẩu</label
+                >
+                <Password
+                  id="password1"
+                  v-model="password"
+                  placeholder="Mật khẩu"
+                  autocomplete="current-password"
+                  :toggleMask="true"
+                  :feedback="false"
+                  :class="['w-full', { 'p-invalid': passwordInvalid }]"
+                  :inputClass="['w-full', { 'p-invalid': passwordInvalid }]"
+                  :inputStyle="{ padding: '1rem' }"></Password>
+                <small v-if="passwordInvalid" class="block p-error"
+                  >Mật khẩu là bắt buộc</small
+                >
+                <small v-else class="block text-600" style="visibility: hidden"
+                  >placeholder</small
+                >
+              </div>
+            </template>
+
+            <template v-else>
+              <div class="flex flex-column gap-2">
+                <label
+                  for="collection1"
+                  class="block text-900 font-medium text-xl"
+                  >Collection</label
+                >
+                <InputText
+                  id="collection1"
+                  type="text"
+                  placeholder="Bỏ trống nếu dùng collection mặc định"
+                  autocomplete="off"
+                  class="w-full mb-1"
+                  style="padding: 1rem"
+                  v-model="collection" />
+                <!-- Giữ 1 dòng ẩn để chiều cao khớp tab Mật khẩu (chống nhảy UI) -->
+                <small class="block text-600" style="visibility: hidden"
+                  >placeholder</small
+                >
+              </div>
+
+              <div class="flex flex-column gap-2">
+                <label for="token1" class="block text-900 font-medium text-xl"
+                  >Personal Access Token</label
+                >
               <Password
-                id="password1"
-                v-model="password"
-                placeholder="Mật khẩu"
-                autocomplete="current-password"
+                id="token1"
+                v-model="token"
+                placeholder="Dán PAT từ TFS"
+                autocomplete="off"
                 :toggleMask="true"
                 :feedback="false"
-                :class="['w-full', { 'p-invalid': passwordInvalid }]"
-                :inputClass="['w-full', { 'p-invalid': passwordInvalid }]"
+                :class="['w-full', { 'p-invalid': tokenInvalid }]"
+                :inputClass="['w-full', { 'p-invalid': tokenInvalid }]"
                 :inputStyle="{ padding: '1rem' }"></Password>
-              <small v-if="passwordInvalid" class="block p-error"
-                >Mật khẩu là bắt buộc</small
+              <small v-if="tokenInvalid" class="block p-error"
+                >Token là bắt buộc</small
               >
-            </div>
-            <div v-if="errorMsg">
-              <InlineMessage
-                severity="error"
-                class="w-full justify-content-start"
-                >{{ errorMsg }}</InlineMessage
+              <small v-else class="text-600"
+                >Tạo ở TFS: User settings, Personal access tokens</small
               >
-            </div>
+              </div>
+            </template>
 
-            <div class="flex align-items-center mt-2">
+            <div class="flex align-items-center mt-auto">
               <Checkbox
                 v-model="remember"
                 inputId="remember1"
@@ -166,7 +250,7 @@ async function login() {
               :label="loading ? 'Đang đăng nhập...' : 'Đăng nhập'"
               type="submit"
               :loading="loading"
-              class="w-full p-3 text-xl mt-4"></Button>
+              class="login-btn w-full p-3 text-xl mt-4"></Button>
           </form>
         </div>
       </div>
@@ -176,13 +260,47 @@ async function login() {
 </template>
 
 <style scoped>
-.pi-eye {
+/* Icon mắt đặt bên TRÁI input — mép phải chừa trống cho icon password
+   manager (Passbolt...) của extension chèn vào, hết đè nhau.
+   PrimeVue 3.49: icon là SVG .p-input-icon, absolute right: 0.75rem —
+   đổi sang left. padding-left !important để thắng inline inputStyle. */
+:deep(.p-password > .p-input-icon) {
+  left: 1.25rem;
+  right: auto;
   transform: scale(1.6);
-  margin-right: 1rem;
+  opacity: 0.7;
 }
 
-.pi-eye-slash {
-  transform: scale(1.6);
-  margin-right: 1rem;
+:deep(.p-password input) {
+  padding-left: 3rem !important;
+}
+
+/* 2 nút Token / Mật khẩu cùng độ rộng */
+:deep(.auth-toggle .p-button) {
+  min-width: 10rem;
+  justify-content: center;
+}
+
+/* Nút login: label luôn căn giữa (label flex 1 1 auto mặc định sẽ dạt trái) */
+:deep(.login-btn) {
+  justify-content: center;
+}
+
+:deep(.login-btn .p-button-label) {
+  flex: 0 1 auto;
+}
+
+:deep(.login-btn .p-button-loading-icon) {
+  margin-right: 0.5rem;
+}
+</style>
+
+<style>
+/* Icon Passbolt chèn vào DOM trang dưới dạng <passbolt-iframe> — ẩn luôn
+   cho sạch. Element ngoài #app nên block này PHẢI không scoped.
+   Các extension khác icon nằm mép phải input, đã chừa trống sau khi
+   chuyển icon mắt sang trái. */
+passbolt-iframe {
+  display: none !important;
 }
 </style>

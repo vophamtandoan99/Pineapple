@@ -5,6 +5,7 @@ import { useToast } from "primevue/usetoast";
 import { useAuth } from "@/service/AuthService";
 import { useProject } from "@/service/ProjectService";
 import { useLayout } from "@/layout/composables/layout";
+import { apiFetch } from "@/service/ApiLoader";
 
 const { isDarkTheme } = useLayout();
 const router = useRouter();
@@ -260,7 +261,7 @@ onMounted(async () => {
     new ResizeObserver(() => playMarquee()).observe(track);
   }
   try {
-    const r = await fetch("/api/items");
+    const r = await apiFetch("/api/items");
     if (r.status === 401) {
       sessionExpired(toast, router);
       return;
@@ -349,7 +350,7 @@ watch(
               class="sprint-marquee-logo"
               :style="{
                 backgroundImage: `url(/layout/images/${
-                  isDarkTheme ? 'logo-white' : 'logo-dark'
+                  isDarkTheme ? 'logo-light' : 'logo-dark'
                 }.svg)`,
               }"
             ></div>

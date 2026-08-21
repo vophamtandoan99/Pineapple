@@ -1,4 +1,5 @@
 import { ref } from 'vue';
+import { apiFetch } from './ApiLoader';
 
 // Trạng thái collection/project dùng chung toàn app (module scope).
 // Lựa chọn được lưu phía server trong session — reload trang vẫn giữ.
@@ -15,7 +16,7 @@ let loadedCollection = '';
 function loadCollections(force = false) {
     if (force) collectionsPromise = null;
     if (!collectionsPromise) {
-        const p = fetch('/api/collections')
+        const p = apiFetch('/api/collections', { silent: true })
             .then(async (r) => {
                 const j = await r.json().catch(() => ({}));
                 if (!r.ok) {
@@ -41,7 +42,7 @@ function loadProjects(collection, force = false) {
         projectsPromise = null;
     }
     if (!projectsPromise) {
-        const p = fetch(`/api/projects?collection=${encodeURIComponent(collection)}`)
+        const p = apiFetch(`/api/projects?collection=${encodeURIComponent(collection)}`, { silent: true })
             .then(async (r) => {
                 const j = await r.json().catch(() => ({}));
                 if (!r.ok) {
@@ -63,7 +64,8 @@ function loadProjects(collection, force = false) {
 
 // Chọn collection + project — server ghi vào session
 async function selectProject(collection, name) {
-    const r = await fetch('/api/select-project', {
+    const r = await apiFetch('/api/select-project', {
+        silent: true,
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ collection, project: name })

@@ -1,0 +1,27 @@
+# VCS / metadata
+.git
+.gitignore
+.gitattributes
+.DS_Store
+
+# Node — image tự npm install, không cần copy từ host
+node_modules
+**/node_modules
+
+# Build artifacts cũ trên host — image build lại từ source
+frontend/dist
+
+# Python bytecode
+__pycache__
+**/__pycache__
+*.pyc
+**/*.log
+
+# Chứa token TFS — không đóng vào image (compose bind mount khi chạy)
+backend/config.json
+
+# Không dùng trong image
+api/
+vercel.json
+dev.sh
+README.md
