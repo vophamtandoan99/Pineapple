@@ -6,17 +6,19 @@ Sessions lưu in-memory (không ghi disk), mật khẩu không persist.
 Report ghi vào <cwd>/<yyyy>/<m>/<d>.md cùng quy tắc CLI.
 """
 
+import base64
 import datetime
+import hashlib
 import http.server
 import json
 import os
-import subprocess
 import sys
+import time
 import urllib.parse
-import uuid
 
-import json
-from http.server import BaseHTTPRequestHandler
+import requests
+from cryptography.fernet import Fernet, InvalidToken
+from requests_ntlm import HttpNtlmAuth
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
@@ -35,66 +37,106 @@ FIELDS = [
     "Microsoft.VSTS.Scheduling.RemainingWork",
     "Microsoft.VSTS.Scheduling.CompletedWork",
 ]
-SESSIONS = {}  # token -> {"user": ..., "password": ...}
 
 
 def load_config():
     try:
         with open(CONFIG_PATH, encoding="utf-8") as fh:
-            return json.load(fh)
+            cfg = json.load(fh)
     except (FileNotFoundError, json.JSONDecodeError):
-        return {}
+        cfg = {}
+    # Serverless (Vercel) không nên giữ cấu hình trong file; ưu tiên env.
+    cfg["server"] = os.environ.get("TFS_SERVER") or cfg.get("server", "")
+    cfg["fullname"] = os.environ.get("TFS_FULLNAME") or cfg.get("fullname", "")
+    cfg.setdefault("org", "")
+    cfg.setdefault("project", "")
+    cfg.setdefault("user", "")
+    return cfg
 
 
 CFG = load_config()
 
 
-def tfs_curl(creds, url, body=None, head_only=False):
-    cmd = [
-        "curl", "-s", "--fail-with-body", "--max-time", "60", "--ntlm",
-        "-u", f"{creds['user']}:{creds['password']}",
-        "-H", "Accept: application/json",
-    ]
-    data = None
-    if body is not None:
-        data = json.dumps(body).encode()
-        cmd += ["-H", "Content-Type: application/json", "--data-binary", "@-"]
-    if head_only:
-        cmd = [c for c in cmd if c != "--fail-with-body"] + ["-o", "/dev/null", "-w", "%{http_code}"]
-    cmd.append(url)
-    return subprocess.run(cmd, input=data, capture_output=True)
+# --- session: token mã hóa trong cookie (stateless, dùng được trên serverless) ---
+SESSION_COOKIE = "session"
+SESSION_TTL = 12 * 3600          # đăng nhập thường
+SESSION_TTL_REMEMBER = 30 * 86400  # "ghi nhớ đăng nhập"
+
+
+def _fernet():
+    """Khóa mã hóa cookie. Bắt buộc set SESSION_SECRET trên Vercel (Fernet key);
+    fallback local khóa suy từ server URL — chỉ tiện dev, không an toàn."""
+    secret = os.environ.get("SESSION_SECRET", "")
+    if not secret:
+        digest = hashlib.sha256(("pineapple-local:" + CFG.get("server", "")).encode()).digest()
+        secret = base64.urlsafe_b64encode(digest).decode()
+    return Fernet(secret.encode())
+
+
+def make_session_token(creds):
+    payload = dict(creds)
+    payload["exp"] = int(time.time()) + (SESSION_TTL_REMEMBER if creds.get("remember") else SESSION_TTL)
+    return _fernet().encrypt(json.dumps(payload).encode()).decode()
+
+
+def read_session_token(token):
+    try:
+        payload = json.loads(_fernet().decrypt(token.encode()))
+    except (InvalidToken, ValueError):
+        return None
+    if payload.get("exp", 0) < time.time():
+        return None
+    return payload
+
+
+def tfs_request(creds, url, body=None):
+    """Gọi TFS API với NTLM qua requests (không cần binary curl). Trả (ok, text)."""
+    headers = {"Accept": "application/json"}
+    auth = HttpNtlmAuth(creds["user"], creds["password"])
+    try:
+        if body is None:
+            r = requests.get(url, auth=auth, headers=headers, timeout=60)
+        else:
+            r = requests.post(url, auth=auth, headers=headers,
+                              data=json.dumps(body), timeout=60)
+        return 200 <= r.status_code < 300, r.text
+    except requests.RequestException as e:
+        return False, f"Lỗi kết nối TFS: {e}"
 
 
 def api_url(path, scope="project", project=None, collection=None):
-    org = urllib.parse.quote(collection or CFG["org"], safe="")
+    org = urllib.parse.quote(collection or CFG.get("org", ""), safe="")
+    server = CFG.get("server", "")
     if scope == "server":
-        return f"{CFG['server']}/{path}"
+        return f"{server}/{path}"
     if scope == "collection":
-        return f"{CFG['server']}/{org}/{path}"
-    proj = urllib.parse.quote(project or CFG["project"], safe="")
-    return f"{CFG['server']}/{org}/{proj}/{path}"
+        return f"{server}/{org}/{path}"
+    proj = urllib.parse.quote(project or CFG.get("project", ""), safe="")
+    return f"{server}/{org}/{proj}/{path}"
 
 
 def login_ok(user, password):
+    # Endpoint server-scope: không cần collection vì user chọn collection/project
+    # SAU khi login; CFG["org"] có thể trống.
     creds = {"user": user, "password": password}
-    p = tfs_curl(creds, api_url(f"_apis/projects?api-version={API}", "collection"), head_only=True)
-    return p.stdout.decode(errors="replace").strip() == "200"
+    ok, _ = tfs_request(creds, api_url(f"_apis/projectcollections?api-version={API}", "server"))
+    return ok
 
 
 def fetch_collections(creds):
     """List collection của server TFS: {server}/_apis/projectcollections"""
-    p = tfs_curl(creds, api_url(f"_apis/projectcollections?api-version={API}", "server"))
-    if p.returncode != 0:
-        raise RuntimeError(p.stdout.decode(errors="replace")[:300])
-    return json.loads(p.stdout).get("value", [])
+    ok, text = tfs_request(creds, api_url(f"_apis/projectcollections?api-version={API}", "server"))
+    if not ok:
+        raise RuntimeError(text[:300])
+    return json.loads(text).get("value", [])
 
 
 def fetch_projects(creds, collection):
     """List project trong một collection: {server}/{collection}/_apis/projects"""
-    p = tfs_curl(creds, api_url(f"_apis/projects?api-version={API}", "collection", collection=collection))
-    if p.returncode != 0:
-        raise RuntimeError(p.stdout.decode(errors="replace")[:300])
-    return json.loads(p.stdout).get("value", [])
+    ok, text = tfs_request(creds, api_url(f"_apis/projects?api-version={API}", "collection", collection=collection))
+    if not ok:
+        raise RuntimeError(text[:300])
+    return json.loads(text).get("value", [])
 
 
 def cur_collection(creds):
@@ -112,11 +154,11 @@ def fetch_state_colors(creds, wtypes=("Epic", "User Story", "Task", "Bug")):
     colors = {}
     for wtype in wtypes:
         url = api_url(f"_apis/wit/workitemtypes/{urllib.parse.quote(wtype)}/states?api-version=5.0-preview.1", project=project, collection=collection)
-        p = tfs_curl(creds, url)
-        if p.returncode != 0:
+        ok, text = tfs_request(creds, url)
+        if not ok:
             continue
         try:
-            value = json.loads(p.stdout).get("value", [])
+            value = json.loads(text).get("value", [])
         except json.JSONDecodeError:
             continue
         for st in value:
@@ -129,20 +171,20 @@ def fetch_state_colors(creds, wtypes=("Epic", "User Story", "Task", "Bug")):
 def fetch_items(creds):
     collection = cur_collection(creds)
     project = cur_project(creds)
-    p = tfs_curl(creds, api_url(f"_apis/wit/wiql?api-version={API}", project=project, collection=collection), {
+    ok, text = tfs_request(creds, api_url(f"_apis/wit/wiql?api-version={API}", project=project, collection=collection), {
         "query": "SELECT [System.Id] FROM WorkItems WHERE [System.AssignedTo] = @me ORDER BY [System.ChangedDate] DESC"
     })
-    if p.returncode != 0:
-        raise RuntimeError(p.stdout.decode(errors="replace")[:300])
-    ids = [w["id"] for w in json.loads(p.stdout).get("workItems", [])]
+    if not ok:
+        raise RuntimeError(text[:300])
+    ids = [w["id"] for w in json.loads(text).get("workItems", [])]
     items = []
     for i in range(0, len(ids), 200):
         chunk = ids[i : i + 200]
-        r = tfs_curl(creds, api_url(f"_apis/wit/workitemsbatch?api-version={API}", project=project, collection=collection),
+        ok, text = tfs_request(creds, api_url(f"_apis/wit/workitemsbatch?api-version={API}", project=project, collection=collection),
                      {"ids": chunk, "fields": FIELDS})
-        if r.returncode != 0:
-            raise RuntimeError(r.stdout.decode(errors="replace")[:300])
-        items.extend(json.loads(r.stdout).get("value", []))
+        if not ok:
+            raise RuntimeError(text[:300])
+        items.extend(json.loads(text).get("value", []))
     return items
 
 
@@ -218,8 +260,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         cookie = self.headers.get("Cookie", "")
         for part in cookie.split(";"):
             k, _, v = part.strip().partition("=")
-            if k == "session" and v in SESSIONS:
-                return SESSIONS[v]
+            if k == SESSION_COOKIE and v:
+                return read_session_token(v)
         return None
 
     def _body(self):
@@ -293,11 +335,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 parent_titles = {it["id"]: it["fields"].get("System.Title", "") for it in items}
                 missing = [p for p in (it["fields"].get("System.Parent") for it in items) if p and p not in known]
                 for pid in dict.fromkeys(missing):
-                    r = tfs_curl(creds, api_url(f"_apis/wit/workitems/{pid}?api-version={API}&fields=System.Id,System.Title", project=project, collection=collection))
-                    if r.returncode != 0:
+                    ok, text = tfs_request(creds, api_url(f"_apis/wit/workitems/{pid}?api-version={API}&fields=System.Id,System.Title", project=project, collection=collection))
+                    if not ok:
                         continue
                     try:
-                        parent_titles[pid] = json.loads(r.stdout).get("fields", {}).get("System.Title", "")
+                        parent_titles[pid] = json.loads(text).get("fields", {}).get("System.Title", "")
                     except json.JSONDecodeError:
                         continue
                 out = [
@@ -338,19 +380,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not user or not password or not login_ok(user, password):
                 self._send({"error": "Sai username hoặc mật khẩu"}, 401)
                 return
-            token = uuid.uuid4().hex
-            SESSIONS[token] = {"user": user, "password": password}
-            cookie = f"session={token}; HttpOnly; Path=/"
-            if body.get("remember"):
-                cookie += "; Max-Age=2592000"  # 30 ngày
+            creds = {"user": user, "password": password, "remember": bool(body.get("remember"))}
+            token = make_session_token(creds)
+            cookie = f"{SESSION_COOKIE}={token}; HttpOnly; Path=/; SameSite=Lax"
+            if creds["remember"]:
+                cookie += f"; Max-Age={SESSION_TTL_REMEMBER}"
             self._send({"ok": True, "user": user, "fullname": CFG.get("fullname", "")}, set_cookie=cookie)
         elif parsed.path == "/api/logout":
-            cookie = self.headers.get("Cookie", "")
-            for part in cookie.split(";"):
-                k, _, v = part.strip().partition("=")
-                if k == "session":
-                    SESSIONS.pop(v, None)
-            self._send({"ok": True})
+            self._send({"ok": True}, set_cookie=f"{SESSION_COOKIE}=; HttpOnly; Path=/; Max-Age=0")
         elif parsed.path == "/api/select-project":
             creds = self._session()
             if not creds:
@@ -376,7 +413,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return
             creds["collection"] = collection
             creds["project"] = project
-            self._send({"ok": True, "collection": collection, "project": project})
+            # Re-issue cookie vì session stateless: collection/project nằm trong token
+            token = make_session_token(creds)
+            cookie = f"{SESSION_COOKIE}={token}; HttpOnly; Path=/; SameSite=Lax"
+            if creds.get("remember"):
+                cookie += f"; Max-Age={SESSION_TTL_REMEMBER}"
+            self._send({"ok": True, "collection": collection, "project": project}, set_cookie=cookie)
         elif parsed.path == "/api/report":
             creds = self._session()
             if not creds:
@@ -406,37 +448,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self._send({"error": "Không chọn item nào"}, 400)
                 return
             report = render_report(today_items, next_items, report_date, body.get("fullname"), creds["user"], collection, project)
-            out_path = os.path.join(str(report_date.year), str(report_date.month), f"{report_date.day}.md")
-            existed = os.path.exists(out_path)
-            if existed:
-                with open(out_path, "a", encoding="utf-8") as fh:
-                    fh.write("\n---\n\n" + report)
-            else:
-                os.makedirs(os.path.dirname(out_path), exist_ok=True)
-                with open(out_path, "w", encoding="utf-8") as fh:
-                    fh.write(report)
-            self._send({"ok": True, "path": out_path, "appended": existed, "count": len(today_items) + len(next_items), "report": report})
+            # Không ghi disk: trả report trong JSON, frontend tự copy/tải file.
+            self._send({"ok": True, "count": len(today_items) + len(next_items), "report": report})
         else:
             self._send({"error": "not found"}, 404)
 
 
-if __name__ == "__main__":
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
-    url = f"http://127.0.0.1:{port}"
-    print(f"Web UI: {url}   (Ctrl+C để dừng)")
-    http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
-
-
-# Adapter để Vercel Serverless Function gọi đến Handler của bạn
-class handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        # Tái sử dụng lại logic của Handler cũ
-        h = Handler(self.request, self.client_address, self.server)
-        
-    def do_POST(self):
-        h = Handler(self.request, self.client_address, self.server)
-
-# Nếu chạy local bằng lệnh python3 backend/server.py thì vẫn giữ nguyên tính năng dev local
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
     url = f"http://127.0.0.1:{port}"

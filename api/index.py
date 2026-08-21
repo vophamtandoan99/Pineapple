@@ -1,13 +1,19 @@
+"""Vercel serverless entry: nạp Handler từ backend/server.py.
+
+Vercel bundle chứa cả project (cwd = project root), nên chỉ cần thêm
+backend/ vào sys.path. vercel.json rewrite mọi /api/* về đây.
+Lưu ý: KHÔNG để fastapi/flask trong requirements.txt — Vercel sẽ bật
+framework preset và bỏ qua các function trong /api.
+"""
+
 import os
 import sys
 
-# Thêm thư mục backend vào đường dẫn để python tìm thấy module
-sys.path.append(os.path.join(os.path.dirname(__file__), "..", "backend"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "backend"))
 
-from server import Handler
-from http.server import HTTPServer
+from server import Handler  # noqa: E402
 
-# Adapter để Vercel Serverless Function gọi đến Handler của bạn
+
 class handler(Handler):
     def log_message(self, format, *args):
-        pass  # Tắt log rườm rà trên serverless
+        pass  # tắt log rườm rà trên serverless
