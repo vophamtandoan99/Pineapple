@@ -217,9 +217,11 @@ def render_chat(today_items, next_items, report_date, fullname, user):
     return "\n".join(lines)
 
 
-def render_lark(items, report_date, collection, project):
+def render_lark(items, report_date, collection, project, next_ids=None):
     """Phần lark — format theo applications/public/templetes/"""
-    date_str = report_date.strftime("%d/%m/%Y")
+    today_str = report_date.strftime("%d/%m/%Y")
+    next_str = (report_date + datetime.timedelta(days=1)).strftime("%d/%m/%Y")
+    next_ids = next_ids or set()
     lines = [
         "| Status | Start date | End date | Note | Type | Task ID | Task Name | Task Link |",
         "| --- | --- | --- | --- | --- | --- | --- | --- |",
@@ -227,8 +229,11 @@ def render_lark(items, report_date, collection, project):
     base = f"{CFG['server']}/{collection}/{project}/_workitems/edit/"
     for it in items:
         f = it["fields"]
+        # Item "mới" (chọn cho ngày tiếp theo) chưa có start date hôm nay —
+        # ghi ngày mai để Lark không trùng hàng với today_items.
+        start = next_str if it["id"] in next_ids else today_str
         lines.append(
-            f"| {cell(f.get('System.State'))} | {date_str} |  |  "
+            f"| {cell(f.get('System.State'))} | {start} |  |  "
             f"| {cell(f.get('System.WorkItemType'))} | {it['id']} "
             f"| {cell(f.get('System.Title'))} | {base}{it['id']} |"
         )
@@ -242,7 +247,9 @@ def render_report(today_items, next_items, report_date, fullname, user, collecti
         if it["id"] not in seen:
             seen.add(it["id"])
             merged.append(it)
-    return render_chat(today_items, next_items, report_date, fullname, user) + "\n\n" + render_lark(merged, report_date, collection, project) + "\n"
+    # next_ids để render_lark phân biệt item mới (start = ngày mai) vs today (start = hôm nay)
+    next_ids = {it["id"] for it in next_items}
+    return render_chat(today_items, next_items, report_date, fullname, user) + "\n\n" + render_lark(merged, report_date, collection, project, next_ids=next_ids) + "\n"
 
 
 class Handler(http.server.BaseHTTPRequestHandler):

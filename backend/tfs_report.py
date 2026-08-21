@@ -226,8 +226,10 @@ def render_chat(today_items, next_items, today):
     return lines
 
 
-def render_lark(items, today):
-    date_str = today.strftime("%d/%m/%Y")
+def render_lark(items, today, next_ids=None):
+    today_str = today.strftime("%d/%m/%Y")
+    next_str = (today + datetime.timedelta(days=1)).strftime("%d/%m/%Y")
+    next_ids = next_ids or set()
     lines = [
         "| Status | Start date | End date | Note | Type | Task ID | Task Name | Task Link |",
         "| --- | --- | --- | --- | --- | --- | --- | --- |",
@@ -235,8 +237,11 @@ def render_lark(items, today):
     base = f'{CFG["server"]}/{CFG["org"]}/{CFG["project"]}/_workitems/edit/'
     for it in items:
         f = it["fields"]
+        # Item "mới" (chọn cho ngày tiếp theo) chưa có start date hôm nay —
+        # ghi ngày mai để Lark không trùng hàng với today_items.
+        start = next_str if it["id"] in next_ids else today_str
         lines.append(
-            f"| {cell(f.get('System.State'))} | {date_str} |  |  "
+            f"| {cell(f.get('System.State'))} | {start} |  |  "
             f"| {cell(f.get('System.WorkItemType'))} | {it['id']} "
             f"| {cell(f.get('System.Title'))} | {base}{it['id']} |"
         )
@@ -380,7 +385,7 @@ def main():
         if it["id"] not in seen:
             seen.add(it["id"])
             merged.append(it)
-    report = "\n".join(render_chat(today_items, next_items, report_date) + [""] + render_lark(merged, report_date) + [""])
+    report = "\n".join(render_chat(today_items, next_items, report_date) + [""] + render_lark(merged, report_date, next_ids={it["id"] for it in next_items}) + [""])
     if os.path.exists(out_path):
         with open(out_path, "a", encoding="utf-8") as fh:
             fh.write("\n---\n\n" + report)
