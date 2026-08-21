@@ -31,6 +31,12 @@ npm install
 npm run dev                      # frontend
 ```
 
+```bash
+#kill server backend
+pkill -9 -f "backend/server.py"
+ss -ltnp | grep -E ':(8765|5173)' | awk '{print $NF}' | grep -oP 'pid=\K[0-9]+' | xargs -r kill -9
+```
+
 ## Cấu hình
 
 `backend/config.json` — tự tạo bằng CLI `run report init` (hoặc `python3 backend/tfs_report.py init`), gồm: fullname, server URL, user/pass. File chứa mật khẩu plaintext, đã chmod `600` — chỉ giữ trên máy cá nhân.

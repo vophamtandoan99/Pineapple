@@ -107,6 +107,60 @@ def tfs_request(creds, url, body=None):
         return False, f"Lỗi kết nối TFS: {e}"
 
 
+def fetch_fullname(creds):
+    """Lấy display name thật của user đang đăng nhập từ TFS. Thử nhiều endpoint
+    + nhiều field vì TFS version khác nhau trả shape khác nhau (Azure DevOps
+    Server vs TFS cũ, connectionData vs profile API)."""
+    candidates = [
+        f"{CFG['server']}/_apis/connectionData",
+        f"{CFG['server']}/_apis/profile/profiles/me",
+    ]
+    for url in candidates:
+        ok, text = tfs_request(creds, url)
+        if not ok:
+            print(f"[fetch_fullname] {url} -> fail: {text[:200]}", file=sys.stderr)
+            continue
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            print(f"[fetch_fullname] {url} -> non-JSON: {text[:200]}", file=sys.stderr)
+            continue
+        # connectionData: authenticatedUser.{customDisplayName, providerDisplayName,
+        # properties.DisplayName.$value}
+        user = data.get("authenticatedUser") if url.endswith("connectionData") else None
+        if user is None:
+            # profile API: top-level displayName
+            name = data.get("displayName") or ""
+            if name:
+                return name
+            continue
+        properties = user.get("properties") or {}
+        display_name_prop = properties.get("DisplayName") or {}
+        # ConnectionData có khi bọc value trong $value (typed property); có khi
+        # lại là string thẳng.
+        if isinstance(display_name_prop, dict):
+            prop_value = display_name_prop.get("$value") or ""
+        else:
+            prop_value = display_name_prop
+        # Một số phiên bản TFS đặt name dưới key khác (Account, FullName, etc.).
+        for key in ("Account", "FullName", "Name"):
+            v = properties.get(key)
+            if isinstance(v, dict):
+                v = v.get("$value", "")
+            if v and isinstance(v, str):
+                prop_value = prop_value or v
+        name = (
+            user.get("customDisplayName")
+            or user.get("providerDisplayName")
+            or prop_value
+            or (user.get("identity") or {}).get("DisplayName")
+            or ""
+        )
+        if name:
+            return name
+    return ""
+
+
 def api_url(path, scope="project", project=None, collection=None):
     org = urllib.parse.quote(collection or CFG.get("org", ""), safe="")
     server = CFG.get("server", "")
@@ -286,10 +340,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return
             self._send({
                 "user": creds["user"],
-                "fullname": CFG.get("fullname", ""),
+                "fullname": creds.get("fullname") or CFG.get("fullname", ""),
                 "collection": cur_collection(creds),
                 "project": cur_project(creds),
             })
+        elif self.path == "/api/whoami-debug":
+            # Debug endpoint: trả raw response từ TFS connectionData để xem shape thật.
+            creds = self._session()
+            if not creds:
+                self._send({"error": "Chưa đăng nhập"}, 401)
+                return
+            ok, text = tfs_request(creds, f"{CFG['server']}/_apis/connectionData")
+            self._send({"ok": ok, "raw": text[:2000], "creds_fullname": creds.get("fullname", "")})
         elif self.path == "/api/collections":
             creds = self._session()
             if not creds:
@@ -370,7 +432,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 ]
                 self._send({
                     "items": out,
-                    "fullname": CFG.get("fullname", ""),
+                    "fullname": creds.get("fullname") or CFG.get("fullname", ""),
                     "collection": collection,
                     "project": project,
                     "taskBase": f"{CFG['server']}/{collection}/{project}/_workitems/edit/",
@@ -391,11 +453,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self._send({"error": "Sai username hoặc mật khẩu"}, 401)
                 return
             creds = {"user": user, "password": password, "remember": bool(body.get("remember"))}
+            # Lấy display name thật từ TFS; fallback về config nếu endpoint lỗi.
+            # Lưu vào creds để /api/me và report sau này dùng lại.
+            creds["fullname"] = fetch_fullname(creds) or CFG.get("fullname", "")
+            if not creds["fullname"]:
+                # Log khi không lấy được — dev xem stderr để biết TFS trả shape gì.
+                print(f"[login] fetch_fullname rỗng cho user={user!r}", file=sys.stderr)
             token = make_session_token(creds)
             cookie = f"{SESSION_COOKIE}={token}; HttpOnly; Path=/; SameSite=Lax"
             if creds["remember"]:
                 cookie += f"; Max-Age={SESSION_TTL_REMEMBER}"
-            self._send({"ok": True, "user": user, "fullname": CFG.get("fullname", "")}, set_cookie=cookie)
+            self._send({"ok": True, "user": user, "fullname": creds["fullname"]}, set_cookie=cookie)
         elif parsed.path == "/api/logout":
             self._send({"ok": True}, set_cookie=f"{SESSION_COOKIE}=; HttpOnly; Path=/; Max-Age=0")
         elif parsed.path == "/api/select-project":
