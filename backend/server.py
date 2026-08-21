@@ -3,7 +3,7 @@
 
 Chạy:  python3 backend/server.py   ->  http://127.0.0.1:8765
 Sessions lưu in-memory (không ghi disk), mật khẩu không persist.
-Report ghi vào <cwd>/<yyyy>/<m>/<d>.md cùng quy tắc CLI.
+Report trả về trong JSON, không ghi disk.
 """
 
 import base64
