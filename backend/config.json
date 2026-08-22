@@ -7,14 +7,40 @@
   "token": "",
   "lark_state": "",
   "lark_type": "",
-  "lark_rules": [],
-  "lark_end_rules": [],
+  "lark_rules": [
+    {
+      "type": "Bug",
+      "state": "Active",
+      "by": ["me"],
+      "pick": "last"
+    },
+    {
+      "type": "Task",
+      "state": "Active",
+      "by": ["me"],
+      "pick": "last"
+    }
+  ],
+  "lark_end_rules": [
+    {
+      "type": "Bug",
+      "state": "Resolved",
+      "by": ["me"],
+      "pick": "last"
+    },
+    {
+      "type": "Task",
+      "state": "Closed",
+      "by": ["me"],
+      "pick": "last"
+    }
+  ],
   "ui": {
     "ripple": true,
     "darkTheme": false,
     "inputStyle": "outlined",
     "menuMode": "overlay",
-    "theme": "lara-light-blue",
+    "theme": "aura-light-amber",
     "scale": 15
   },
   "percent_mode": "work",

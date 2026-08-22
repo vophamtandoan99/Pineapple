@@ -219,7 +219,7 @@ def render_chat(today_items, next_items, today):
     lines.append("*Công việc ngày tiếp theo:*")
     for it in next_items:
         f = it["fields"]
-        lines.append(f"- {cell(f.get('System.WorkItemType'))} {it['id']}: {cell(f.get('System.Title'))}")
+        lines.append(f"- {cell(f.get('System.WorkItemType'))} {it['id']}: {cell(f.get('System.Title'))} (0%)")
     if not next_items:
         lines.append("- ...")
     lines += ["*Vấn đề:*", "- None"]
@@ -227,12 +227,12 @@ def render_chat(today_items, next_items, today):
 
 
 def render_lark(items, today, next_ids=None):
-    today_str = today.strftime("%d/%m/%Y")
-    next_str = (today + datetime.timedelta(days=1)).strftime("%d/%m/%Y")
+    today_str = today.strftime("%Y-%m-%d")
+    next_str = (today + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
     next_ids = next_ids or set()
     lines = [
-        "| Status | Start date | End date | Note | Type | Task ID | Task Name | Task Link |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| Status | Start date | End date | OT | Note | Type | Task ID | Task Name | Task Link |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     base = f'{CFG["server"]}/{CFG["org"]}/{CFG["project"]}/_workitems/edit/'
     for it in items:
@@ -241,7 +241,7 @@ def render_lark(items, today, next_ids=None):
         # ghi ngày mai để Lark không trùng hàng với today_items.
         start = next_str if it["id"] in next_ids else today_str
         lines.append(
-            f"| {cell(f.get('System.State'))} | {start} |  |  "
+            f"| {cell(f.get('System.State'))} | {start} |  |  |  "
             f"| {cell(f.get('System.WorkItemType'))} | {it['id']} "
             f"| {cell(f.get('System.Title'))} | {base}{it['id']} |"
         )

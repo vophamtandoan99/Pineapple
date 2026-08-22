@@ -1,1 +1,0 @@
-import{_ as n,f as o,g as s,h as t}from"./index-92cee1a2.js";const i={},a={class:"flex align-items-center py-5 px-3"};function c(r,e){return o(),s("div",a,[...e[0]||(e[0]=[t("i",{class:"pi pi-fw pi-check mr-2 text-2xl"},null,-1),t("p",{class:"m-0 text-lg"},"Confirmation Component Content via Child Route",-1)])])}const f=n(i,[["render",c]]);export{f as default};

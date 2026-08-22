@@ -21,16 +21,16 @@
 - &lt;Type&gt; &lt;ID&gt;: &lt;title&gt; (&lt;progress&gt;%)
 - ...
 *Công việc ngày tiếp theo:*
-- &lt;Type&gt; &lt;ID&gt;: &lt;title&gt;
+- &lt;Type&gt; &lt;ID&gt;: &lt;title&gt; (&lt;progress&gt;%)
 - ...
 *Vấn đề:*
 - None</code></pre>
-        <p class="line-height-3">Nhóm "Hôm nay" hiển thị % hoàn thành của từng item (xem mục 5); nhóm "Ngày tiếp theo" không kèm %.</p>
+        <p class="line-height-3">Cả 2 nhóm hiển thị % hoàn thành của từng item (xem mục 5).</p>
 
         <h5>3. Template Lark</h5>
-        <pre class="app-code"><code>| Status | Start date | End date | Note | Type | Task ID | Task Name | Task Link |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| &lt;status&gt; | &lt;start date&gt; | &lt;end date&gt; |  | &lt;type&gt; | &lt;id&gt; | &lt;title&gt; | &lt;link&gt; |</code></pre>
+        <pre class="app-code"><code>| Status | Start date | End date | OT | Note | Type | Task ID | Task Name | Task Link |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| &lt;status&gt; | &lt;start date&gt; | &lt;end date&gt; |  |  | &lt;type&gt; | &lt;id&gt; | &lt;title&gt; | &lt;link&gt; |</code></pre>
         <ul class="line-height-3">
             <li><span class="text-primary font-medium">Start date</span> = ngày item vào trạng thái khớp rule "Trạng thái bắt đầu" trong Cài đặt (đọc lịch sử revisions của TFS). Không có rule / không khớp thì fallback ngày báo cáo (item "Mai" dùng ngày mai).</li>
             <li><span class="text-primary font-medium">End date</span> = ngày item vào trạng thái khớp rule "Trạng thái kết thúc". Không có thì để trống.</li>

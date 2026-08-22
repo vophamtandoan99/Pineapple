@@ -313,7 +313,7 @@ def fetch_workitem_types(creds):
     collection = cur_collection(creds)
     project = cur_project(creds)
     last = ""
-    for ver in ("5.0-preview.2", "5.0-preview", "4.1-preview", "5.1-preview", "6.0-preview", "7.0-preview"):
+    for ver in ("4.1", "5.0-preview.2", "5.0-preview", "4.1-preview", "5.1-preview", "6.0-preview", "7.0-preview"):
         ok, text = tfs_request(creds, api_url(f"_apis/wit/workitemtypes?api-version={ver}", project=project, collection=collection))
         if not ok:
             last = text[:300]
@@ -739,14 +739,19 @@ def fetch_dates_for_rules(creds, ids, rules):
         candidates = []
         for r in applicable:
             hits = []
+            prev = None
             for idx, rev in enumerate(revs):  # revisions theo thứ tự thời gian
                 f = rev.get("fields") or {}
                 st = f.get("System.State")
-                is_me = _changed_by_user(f.get("System.ChangedBy"), creds.get("user"))
-                if r["state"] == st and (("me" in r["by"] and is_me) or ("other" in r["by"] and not is_me)):
-                    local = _local_date(f.get("System.ChangedDate"))
-                    if local:
-                        hits.append((idx, local))
+                # chỉ tính revision CHUYỂN sang state rule (prev khác state) —
+                # revision sau đó chỉ sửa field khác, state giữ nguyên, không tính
+                if st != prev and st == r["state"]:
+                    is_me = _changed_by_user(f.get("System.ChangedBy"), creds.get("user"))
+                    if ("me" in r["by"] and is_me) or ("other" in r["by"] and not is_me):
+                        local = _local_date(f.get("System.ChangedDate"))
+                        if local:
+                            hits.append((idx, local))
+                prev = st
             if hits:
                 candidates.append(hits[-1] if r.get("pick") == "last" else hits[0])
         if candidates:
@@ -806,7 +811,7 @@ def render_chat(today_items, next_items, report_date, fullname, user):
     lines.append("*Công việc ngày tiếp theo:*")
     for it in next_items:
         f = it["fields"]
-        lines.append(f"- {cell(f.get('System.WorkItemType'))} {it['id']}: {cell(f.get('System.Title'))}")
+        lines.append(f"- {cell(f.get('System.WorkItemType'))} {it['id']}: {cell(f.get('System.Title'))} ({compute_percent(f)}%)")
     if not next_items:
         lines.append("- ...")
     lines += ["*Vấn đề:*", "- None"]
@@ -815,8 +820,9 @@ def render_chat(today_items, next_items, report_date, fullname, user):
 
 def render_lark(items, report_date, collection, project, next_ids=None, start_dates=None, end_dates=None):
     """Phần lark — format theo applications/public/templetes/"""
-    today_str = report_date.strftime("%d/%m/%Y")
-    next_str = (report_date + datetime.timedelta(days=1)).strftime("%d/%m/%Y")
+    # Start/End date Lark theo format yyyy-mm-dd
+    today_str = report_date.strftime("%Y-%m-%d")
+    next_str = (report_date + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
     next_ids = next_ids or set()
     # start/end_dates: {id: "yyyy-mm-dd"} từ fetch_dates_for_rules theo rules
     # cấu hình. Ưu tiên ngày thật item vào trạng thái; không có thì fallback
@@ -824,27 +830,23 @@ def render_lark(items, report_date, collection, project, next_ids=None, start_da
     start_dates = start_dates or {}
     end_dates = end_dates or {}
     lines = [
-        "| Status | Start date | End date | Note | Type | Task ID | Task Name | Task Link |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| Status | Start date | End date | OT | Note | Type | Task ID | Task Name | Task Link |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     base = f"{CFG['server']}/{collection}/{project}/_workitems/edit/"
-
-    def _fmt(iso):
-        # "yyyy-mm-dd" -> "dd/mm/yyyy"
-        return f"{iso[8:10]}/{iso[5:7]}/{iso[:4]}"
 
     for it in items:
         f = it["fields"]
         real = start_dates.get(it["id"])
         if real:
-            start = _fmt(real)
+            start = real  # đã là yyyy-mm-dd
         # Item "mới" (chọn cho ngày tiếp theo) chưa có start date hôm nay —
         # ghi ngày mai để Lark không trùng hàng với today_items.
         else:
             start = next_str if it["id"] in next_ids else today_str
-        end = _fmt(end_dates[it["id"]]) if end_dates.get(it["id"]) else ""
+        end = end_dates.get(it["id"]) or ""
         lines.append(
-            f"| {cell(f.get('System.State'))} | {start} | {end} |  "
+            f"| {cell(f.get('System.State'))} | {start} | {end} |  |  "
             f"| {cell(f.get('System.WorkItemType'))} | {it['id']} "
             f"| {cell(f.get('System.Title'))} | {base}{it['id']} |"
         )

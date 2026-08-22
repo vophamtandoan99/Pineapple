@@ -1,5 +1,6 @@
 <script setup>
 import { reactive, ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from "vue";
+import { FilterMatchMode } from "primevue/api";
 import { useRouter } from "vue-router";
 import { useToast } from "primevue/usetoast";
 import { useAuth } from "@/service/AuthService";
@@ -72,8 +73,8 @@ const textColorFor = (hex) => {
   const [r, g, b] = [(n >> 16) & 255, (n >> 8) & 255, n & 255];
   return 0.299 * r + 0.587 * g + 0.114 * b > 150 ? "#1f2937" : "#ffffff";
 };
-const stateProgress = { New: 10, Active: 40, Resolved: 70, Closed: 100 };
-const progressOf = (it) => stateProgress[it.state] ?? 30;
+// % hoàn thành theo setting (percent_mode) — backend /api/items trả it.percent
+const progressOf = (it) => it.percent ?? 0;
 
 const stateOptions = computed(() =>
   [...new Set(items.value.map((i) => i.state))].sort(),
@@ -127,10 +128,25 @@ const visibleItems = computed(() => {
 });
 // sort theo iteration để item cùng sprint đứng cạnh nhau
 const groupedItems = computed(() =>
-  [...visibleItems.value].sort((a, b) =>
-    (b.iteration || "").localeCompare(a.iteration || ""),
-  ),
+  [...visibleItems.value]
+    .sort((a, b) => (b.iteration || "").localeCompare(a.iteration || ""))
+    // field lọc ghép "loại + tiêu đề" — filter cột Tiêu đề match cả 2
+    .map((it) => ({ ...it, titleWithType: `${it.type} ${it.title}` })),
 );
+// filter theo cột trên header table (phễu) — kết hợp AND với filter ngoài bảng
+const repFilters = ref({
+  // format đầy đủ cho filterDisplay="menu" (constraints) — form đơn giản
+  // {value, matchMode} crash khi đổi match mode (PrimeVue đọc .constraints[i])
+  // key phải trùng filterField của cột Tiêu đề (lọc theo "loại + tiêu đề")
+  titleWithType: {
+    operator: "and",
+    constraints: [{ value: null, matchMode: FilterMatchMode.CONTAINS }],
+  },
+  state: {
+    operator: "and",
+    constraints: [{ value: null, matchMode: FilterMatchMode.IN }],
+  },
+});
 const sprintLabel = (it) =>
   (it || "").split("\\").pop() || "Không thuộc sprint";
 // option filter có khi là string (state/type), có khi object {label, value}
@@ -416,14 +432,15 @@ const chatMd = computed(() => {
   if (!todayItems.value.length) lines.push("- ...");
   lines.push("*Công việc ngày tiếp theo:*");
   for (const it of nextItems.value)
-    lines.push(`- ${escapeMd(it.type)} ${it.id}: ${escapeMd(it.title)}`);
+    lines.push(`- ${escapeMd(it.type)} ${it.id}: ${escapeMd(it.title)} (${it.percent ?? 100}%)`);
   if (!nextItems.value.length) lines.push("- ...");
   lines.push("*Vấn đề:*", "- None");
   return lines.join("\n");
 });
 
 const larkMd = computed(() => {
-  const dateStr = ddMMyyyy(reportDate.value);
+  // Start/End date Lark theo format yyyy-mm-dd
+  const dateStr = toISODate(reportDate.value);
   const merged = [];
   const seen = new Set();
   for (const it of [...todayItems.value, ...nextItems.value]) {
@@ -433,18 +450,17 @@ const larkMd = computed(() => {
     }
   }
   const lines = [
-    "| Status | Start date | End date | Note | Type | Task ID | Task Name | Task Link |",
-    "| --- | --- | --- | --- | --- | --- | --- | --- |",
+    "| Status | Start date | End date | OT | Note | Type | Task ID | Task Name | Task Link |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
   ];
   for (const it of merged) {
     const link = taskBase.value ? `${taskBase.value}${it.id}` : `${it.id}`;
     // có ngày vào trạng thái (rules cấu hình) thì dùng, không thì fallback
-    const sd = stateDates.value[it.id];
-    const ed = endDates.value[it.id];
-    const start = sd ? fmtIso(sd) : dateStr;
-    const end = ed ? fmtIso(ed) : "";
+    // (stateDates/endDates đã là yyyy-mm-dd nên giữ nguyên)
+    const start = stateDates.value[it.id] || dateStr;
+    const end = endDates.value[it.id] || "";
     lines.push(
-      `| ${escapeMd(it.state)} | ${start} | ${end} |  | ${escapeMd(it.type)} | ${
+      `| ${escapeMd(it.state)} | ${start} | ${end} |  |  | ${escapeMd(it.type)} | ${
         it.id
       } | ${escapeMd(it.title)} | ${link} |`,
     );
@@ -484,8 +500,6 @@ const refreshStateDates = () => {
   }, 400);
 };
 watch(() => [...picked.today, ...picked.next], refreshStateDates);
-const fmtIso = (iso) =>
-  `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}`;
 
 const previewMd = computed(() => {
   if (previewTab.value === 0) return chatMd.value;
@@ -767,8 +781,10 @@ async function copyText(text) {
           :loading="loadingItems || prLoading"
           :rows="rows"
           scrollable
-          scrollHeight="51vh"
+          scrollHeight="47vh"
           :rowsPerPageOptions="[5, 10, 20, 50, 100]"
+          v-model:filters="repFilters"
+          filterDisplay="menu"
           @page="onPage"
           :paginator="true"
           dataKey="id"
@@ -811,6 +827,8 @@ async function copyText(text) {
             field="title"
             header="Tiêu đề"
             :sortable="true"
+            :filter="true"
+            filterField="titleWithType"
             style="width: 40%">
             <template #body="slotProps">
               <div class="flex align-items-center" style="column-gap: 0.5rem">
@@ -839,11 +857,21 @@ async function copyText(text) {
                 >
               </div>
             </template>
+            <template #filter="{ filterModel, filterCallback }">
+              <InputText
+                v-model="filterModel.value"
+                @keydown.enter="filterCallback()"
+                class="p-column-filter"
+                placeholder="Loại hoặc tiêu đề" />
+            </template>
           </Column>
           <Column
             field="state"
             header="Trạng thái"
             :sortable="true"
+            :filter="true"
+            :showFilterMatchModes="false"
+            :filterMenuStyle="{ width: '14rem' }"
             style="min-width: 15rem">
             <template #body="slotProps">
               <Tag
@@ -855,6 +883,15 @@ async function copyText(text) {
                     color: '#1f2937',
                   }
                 " />
+            </template>
+            <template #filter="{ filterModel }">
+              <MultiSelect
+                v-model="filterModel.value"
+                :options="stateOptions"
+                placeholder="Chọn trạng thái"
+                class="p-column-filter"
+                :showClear="true"
+                :maxSelectedLabels="4" />
             </template>
           </Column>
           <Column style="min-width: 5rem" frozen alignFrozen="right">
@@ -909,7 +946,7 @@ async function copyText(text) {
             label="Tạo report"
             icon="pi pi-file"
             @click="makeReport"
-            class="make-report-btn flex-1" />
+            class="make-report-btn flex-none" />
         </div>
 
         <div class="relative">
@@ -921,6 +958,7 @@ async function copyText(text) {
                     icon="pi pi-refresh"
                     class="p-button-text p-button-sm"
                     aria-label="Reset về nội dung tự động"
+                    :disabled="!dirty[previewTab]"
                     @click="resetTab" />
                   <Button
                     icon="pi pi-copy"
@@ -942,6 +980,7 @@ async function copyText(text) {
                     icon="pi pi-refresh"
                     class="p-button-text p-button-sm"
                     aria-label="Reset về nội dung tự động"
+                    :disabled="!dirty[previewTab]"
                     @click="resetTab" />
                   <Button
                     icon="pi pi-copy"
@@ -963,6 +1002,7 @@ async function copyText(text) {
                     icon="pi pi-refresh"
                     class="p-button-text p-button-sm"
                     aria-label="Reset về nội dung tự động"
+                    :disabled="!dirty[previewTab]"
                     @click="resetTab" />
                   <Button
                     icon="pi pi-copy"

@@ -16,8 +16,8 @@
 # Lark
 
 ```
-| Status | Start date | End date | Note | Type | Task ID | Task Name | Task Link |
+| Status | Start date | End date | OT | Note | Type | Task ID | Task Name | Task Link |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| <status> | <current data> | <none> | <none> | <type = Task|Bug> | <id>  | <title> | <link> |
+| <status> | <start date> | <end date> | <ot> | <note> | <type> | <taskid>  | <task name> | <task link> |
 ...
 ```

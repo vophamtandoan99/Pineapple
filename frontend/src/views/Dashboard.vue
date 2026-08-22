@@ -1,5 +1,6 @@
 <script setup>
 import { ref, computed, watch, onMounted, nextTick } from "vue";
+import { FilterMatchMode } from "primevue/api";
 import { useRouter } from "vue-router";
 import { useToast } from "primevue/usetoast";
 import { useAuth } from "@/service/AuthService";
@@ -67,7 +68,29 @@ watch(
 const sprintItems = computed(() =>
   items.value
     .filter((it) => it.iteration === activeIteration.value)
-    .map((it) => ({ ...it, progress: stateProgress[it.state] ?? 30 })),
+    // % theo setting (percent_mode) — backend /api/items trả it.percent
+    .map((it) => ({ ...it, progress: it.percent ?? 0 })),
+);
+// ---------- filter table sprint ----------
+// filter theo cột: ID (số bằng), Tiêu đề (chứa), Loại/Trạng thái (chọn nhiều),
+// Tiến độ (số so sánh) — hiển thị dạng menu phễu trên header cột
+// format constraints đầy đủ cho filterDisplay="menu" — form đơn giản
+// {value, matchMode} crash khi đổi match mode (PrimeVue đọc .constraints[i])
+const _menuFilter = (matchMode) => ({
+  operator: "and",
+  constraints: [{ value: null, matchMode }],
+});
+const dashFilters = ref({
+  title: _menuFilter(FilterMatchMode.CONTAINS),
+  type: _menuFilter(FilterMatchMode.IN),
+  state: _menuFilter(FilterMatchMode.IN),
+  progress: _menuFilter(FilterMatchMode.EQUALS),
+});
+const typeFilterOptions = computed(() =>
+  [...new Set(items.value.map((i) => i.type))].sort(),
+);
+const stateFilterOptions = computed(() =>
+  [...new Set(items.value.map((i) => i.state))].sort(),
 );
 const typeStyles = {
   Epic: { background: "#f97316", color: "#ffffff" },
@@ -237,13 +260,10 @@ const sprintLineData = computed(() => {
     ],
   };
 });
-const stateProgress = { New: 10, Active: 40, Resolved: 70, Closed: 100 };
 const sprintTypeProgress = computed(() => {
   const byType = {};
   sprintItems.value.forEach((it) => {
-    (byType[it.type] = byType[it.type] || []).push(
-      stateProgress[it.state] ?? 30,
-    );
+    (byType[it.type] = byType[it.type] || []).push(it.progress ?? 0);
   });
   return Object.entries(byType).map(([type, ps]) => ({
     type,
@@ -635,6 +655,9 @@ watch(
           :value="sprintItems"
           :rows="5"
           :paginator="true"
+          :rowsPerPageOptions="[5, 10, 20, 50]"
+          v-model:filters="dashFilters"
+          filterDisplay="menu"
           responsiveLayout="scroll"
         >
           <template #empty>
@@ -655,6 +678,7 @@ watch(
             field="title"
             header="Tiêu đề"
             :sortable="true"
+            :filter="true"
             style="width: 23%"
           >
             <template #body="slotProps">
@@ -662,12 +686,37 @@ watch(
                 slotProps.data.title
               }}</span>
             </template>
+            <template #filter="{ filterModel, filterCallback }">
+              <InputText
+                v-model="filterModel.value"
+                @keydown.enter="filterCallback()"
+                class="p-column-filter"
+                placeholder="Tìm tiêu đề" />
+            </template>
           </Column>
-          <Column field="type" header="Loại" style="width: 13%">
+          <Column
+            field="type"
+            header="Loại"
+            :sortable="true"
+            :filter="true"
+            :showFilterMatchModes="false"
+            :filterMenuStyle="{ width: '14rem' }"
+            style="width: 13%"
+          >
             <template #body="slotProps">
               <Tag
                 :value="slotProps.data.type"
                 :style="typeStyles[slotProps.data.type]"
+              />
+            </template>
+            <template #filter="{ filterModel }">
+              <MultiSelect
+                v-model="filterModel.value"
+                :options="typeFilterOptions"
+                placeholder="Chọn loại"
+                class="p-column-filter"
+                :showClear="true"
+                :maxSelectedLabels="4"
               />
             </template>
           </Column>
@@ -675,6 +724,9 @@ watch(
             field="state"
             header="Trạng thái"
             :sortable="true"
+            :filter="true"
+            :showFilterMatchModes="false"
+            :filterMenuStyle="{ width: '14rem' }"
             style="width: 16%"
           >
             <template #body="slotProps">
@@ -688,11 +740,23 @@ watch(
                 "
               />
             </template>
+            <template #filter="{ filterModel }">
+              <MultiSelect
+                v-model="filterModel.value"
+                :options="stateFilterOptions"
+                placeholder="Chọn trạng thái"
+                class="p-column-filter"
+                :showClear="true"
+                :maxSelectedLabels="4"
+              />
+            </template>
           </Column>
           <Column
             field="progress"
             header="Tiến độ"
             :sortable="true"
+            :filter="true"
+            dataType="numeric"
             style="width: 16%"
           >
             <template #body="slotProps">
@@ -706,6 +770,13 @@ watch(
                   >{{ slotProps.data.progress }}%</span
                 >
               </div>
+            </template>
+            <template #filter="{ filterModel, filterCallback }">
+              <InputText
+                v-model="filterModel.value"
+                @keydown.enter="filterCallback()"
+                class="p-column-filter"
+                placeholder="%" />
             </template>
           </Column>
           <Column style="width: 6%">
