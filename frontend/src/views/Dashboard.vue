@@ -18,12 +18,14 @@ const { currentProject } = useProject();
 const items = ref([]);
 const loadingItems = ref(true);
 
+// mọi khối dashboard (stat card, board, chart, bảng, thông báo) đều theo
+// scope dropdown: All Project = toàn bộ, chọn sprint = chỉ sprint đó
 const userStories = computed(() =>
-  items.value.filter((it) => it.type === "User Story"),
+  scopeItems.value.filter((it) => it.type === "User Story"),
 );
-const epics = computed(() => items.value.filter((it) => it.type === "Epic"));
-const tasks = computed(() => items.value.filter((it) => it.type === "Task"));
-const bugs = computed(() => items.value.filter((it) => it.type === "Bug"));
+const epics = computed(() => scopeItems.value.filter((it) => it.type === "Epic"));
+const tasks = computed(() => scopeItems.value.filter((it) => it.type === "Task"));
+const bugs = computed(() => scopeItems.value.filter((it) => it.type === "Bug"));
 const byBoard = (list) =>
   Object.entries(
     list.value.reduce(
@@ -36,38 +38,22 @@ const epicByBoard = computed(() => byBoard(epics));
 const taskByBoard = computed(() => byBoard(tasks));
 const bugByBoard = computed(() => byBoard(bugs));
 const taskBase = ref("");
-const currentIteration = computed(() => {
-  let best = null;
-  for (const it of items.value) {
-    if (!it.iteration) continue;
-    if (!best || (it.changed || "") > (best.changed || "")) best = it;
-  }
-  return best?.iteration || "";
-});
-// sprint đang xem: default = sprint hiện tại, đổi qua dropdown
+// scope đang xem: "" = All Project (toàn bộ items), ngược lại = 1 sprint
 const selectedIteration = ref("");
-const activeIteration = computed(
-  () => selectedIteration.value || currentIteration.value,
-);
+const isAllProject = computed(() => !selectedIteration.value);
 const sprintLabelOf = (it) => (it || "").split("\\").pop() || "—";
-const iterationOptions = computed(() =>
-  [...new Set(items.value.map((i) => i.iteration).filter(Boolean))]
+const iterationOptions = computed(() => [
+  { label: "All Project", value: "" },
+  ...[...new Set(items.value.map((i) => i.iteration).filter(Boolean))]
     .sort()
     .reverse()
     .map((it) => ({ label: sprintLabelOf(it), value: it })),
-);
-// set default 1 lần sau khi load xong items
-watch(
-  items,
-  (v) => {
-    if (v.length && !selectedIteration.value)
-      selectedIteration.value = currentIteration.value;
-  },
-  { immediate: true },
-);
-const sprintItems = computed(() =>
+]);
+const scopeItems = computed(() =>
   items.value
-    .filter((it) => it.iteration === activeIteration.value)
+    .filter(
+      (it) => !selectedIteration.value || it.iteration === selectedIteration.value,
+    )
     // % theo setting (percent_mode) — backend /api/items trả it.percent
     .map((it) => ({ ...it, progress: it.percent ?? 0 })),
 );
@@ -87,10 +73,10 @@ const dashFilters = ref({
   progress: _menuFilter(FilterMatchMode.EQUALS),
 });
 const typeFilterOptions = computed(() =>
-  [...new Set(items.value.map((i) => i.type))].sort(),
+  [...new Set(scopeItems.value.map((i) => i.type))].sort(),
 );
 const stateFilterOptions = computed(() =>
-  [...new Set(items.value.map((i) => i.state))].sort(),
+  [...new Set(scopeItems.value.map((i) => i.state))].sort(),
 );
 const typeStyles = {
   Epic: { background: "#f97316", color: "#ffffff" },
@@ -105,7 +91,10 @@ const textColorFor = (hex) => {
   const [r, g, b] = [(n >> 16) & 255, (n >> 8) & 255, n & 255];
   return 0.299 * r + 0.587 * g + 0.114 * b > 150 ? "#1f2937" : "#ffffff";
 };
-const sprintName = computed(() => sprintLabelOf(activeIteration.value));
+// tên scope hiển thị trên các tiêu đề khối
+const scopeName = computed(() =>
+  isAllProject.value ? "All Project" : sprintLabelOf(selectedIteration.value),
+);
 const typeIcons = {
   Epic: "pi-book",
   "User Story": "pi-inbox",
@@ -126,7 +115,7 @@ const notifGroups = computed(() => {
   const today = new Date().toISOString().slice(0, 10);
   const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
   const groups = {};
-  [...sprintItems.value]
+  [...scopeItems.value]
     .sort((a, b) => (b.changed || "").localeCompare(a.changed || ""))
     .slice(0, 20)
     .forEach((it) => {
@@ -232,7 +221,7 @@ const fmtDT = (iso) => {
 };
 const sprintLineData = computed(() => {
   const byDate = {};
-  sprintItems.value.forEach((it) => {
+  scopeItems.value.forEach((it) => {
     const d = (it.changed || "—").slice(0, 10);
     byDate[d] = (byDate[d] || 0) + 1;
   });
@@ -262,7 +251,7 @@ const sprintLineData = computed(() => {
 });
 const sprintTypeProgress = computed(() => {
   const byType = {};
-  sprintItems.value.forEach((it) => {
+  scopeItems.value.forEach((it) => {
     (byType[it.type] = byType[it.type] || []).push(it.progress ?? 0);
   });
   return Object.entries(byType).map(([type, ps]) => ({
@@ -383,7 +372,7 @@ watch(
         :options="iterationOptions"
         optionLabel="label"
         optionValue="value"
-        placeholder="Chọn sprint"
+        placeholder="All Project"
         :disabled="loadingItems"
         style="width: 14rem"
       />
@@ -596,11 +585,7 @@ watch(
     <!-- progress -->
     <div class="col-12 xl:col-6">
       <div class="card h-full">
-        <h5>
-          Tiến độ work items trong sprint{{
-            sprintName !== "—" ? ` — ${sprintName}` : ""
-          }}
-        </h5>
+        <h5>Tiến độ work items — {{ scopeName }}</h5>
         <ul class="list-none p-0 m-0">
           <li
             v-for="t in sprintTypeProgress"
@@ -637,22 +622,16 @@ watch(
     <!-- sprint overview (line) -->
     <div class="col-12 xl:col-6">
       <div class="card h-full">
-        <h5>
-          Tổng quan sprint hiện tại{{
-            sprintName !== "—" ? ` — ${sprintName}` : ""
-          }}
-        </h5>
+        <h5>Tổng quan — {{ scopeName }}</h5>
         <Chart type="line" :data="sprintLineData" :options="chartOptions" />
       </div>
     </div>
     <!-- sprint items table (2 phần) + notifications (1 phần) -->
     <div class="col-12 xl:col-8">
       <div class="card">
-        <h5>
-          Items trong sprint{{ activeIteration ? ` — ${sprintName}` : "" }}
-        </h5>
+        <h5>Items — {{ scopeName }}</h5>
         <DataTable
-          :value="sprintItems"
+          :value="scopeItems"
           :rows="5"
           :paginator="true"
           :rowsPerPageOptions="[5, 10, 20, 50]"
@@ -665,7 +644,7 @@ watch(
               class="flex flex-column align-items-center justify-content-center py-5 text-500"
             >
               <i class="pi pi-inbox text-4xl mb-2"></i>
-              <span>Không có item nào trong sprint hiện tại</span>
+              <span>Không có item nào</span>
             </div>
           </template>
           <Column

@@ -11,13 +11,17 @@
     {
       "type": "Bug",
       "state": "Active",
-      "by": ["me"],
+      "by": [
+        "me"
+      ],
       "pick": "last"
     },
     {
       "type": "Task",
       "state": "Active",
-      "by": ["me"],
+      "by": [
+        "me"
+      ],
       "pick": "last"
     }
   ],
@@ -25,13 +29,17 @@
     {
       "type": "Bug",
       "state": "Resolved",
-      "by": ["me"],
+      "by": [
+        "me"
+      ],
       "pick": "last"
     },
     {
       "type": "Task",
       "state": "Closed",
-      "by": ["me"],
+      "by": [
+        "me"
+      ],
       "pick": "last"
     }
   ],
@@ -40,8 +48,8 @@
     "darkTheme": false,
     "inputStyle": "outlined",
     "menuMode": "overlay",
-    "theme": "aura-light-amber",
-    "scale": 15
+    "theme": "aura-light-noir",
+    "scale": 12
   },
   "percent_mode": "work",
   "fullname_fallback_user": true

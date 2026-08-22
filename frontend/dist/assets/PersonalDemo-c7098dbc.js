@@ -1,0 +1,1 @@
+import{_ as s,f as n,g as o,h as t}from"./index-ef5e3d7a.js";const r={},a={class:"flex align-items-center py-5 px-3"};function l(c,e){return n(),o("div",a,[...e[0]||(e[0]=[t("i",{class:"pi pi-fw pi-user mr-2 text-2xl"},null,-1),t("p",{class:"m-0 text-lg"},"Personal Component Content via Child Route",-1)])])}const p=s(r,[["render",l]]);export{p as default};
