@@ -8,6 +8,8 @@ Image duy nhất đã được đặt tên sẵn trong `docker-compose.yml`:
 ```bash
 cd deploy
 docker compose build
+
+docker build -t doanvpt/pineapple:latest . # Build lại image mới với đúng tên và tag cũ
 ```
 
 ## Bước 2: Đăng nhập vào Docker Hub
